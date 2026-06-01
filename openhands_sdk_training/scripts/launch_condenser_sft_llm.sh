@@ -30,16 +30,11 @@ if [ ! -f "$BASE/prepare_manifest.json" ]; then
   exit 1
 fi
 
-if compgen -G "$BASE/metadata/*.metadata.json" > /dev/null; then
-  for metadata in "$BASE"/metadata/*.metadata.json; do
-    dataset=$(basename "$metadata" .metadata.json)
-    target="$REPO/datasets/$dataset/metadata.json"
-    if [ ! -f "$target" ]; then
-      cp "$metadata" "$target"
-    fi
-  done
+if ! compgen -G "$BASE/metadata/*.metadata.json" > /dev/null; then
+  echo "Missing cached metadata files in $BASE/metadata; run scripts/prepare_condenser_sft.py first." >&2
+  exit 1
 fi
-
+export ADP_CONDENSER_METADATA_DIR="$BASE/metadata"
 
 for input in "$BASE"/standardized/*.jsonl; do
   name=$(basename "$input" .jsonl)

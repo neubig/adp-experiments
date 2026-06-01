@@ -3,10 +3,40 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
-from agents.openhands_sdk.condensation_sft import process_row
+from agents.openhands_sdk import condensation_sft
+from schema.dataset_metadata import DatasetMetadata
+
+ORIGINAL_LOAD_METADATA = condensation_sft.load_dataset_metadata
+
+
+def load_cached_metadata(
+    dataset_name: str | None,
+    *,
+    required: bool = False,
+    dataset_root: Path | None = None,
+) -> DatasetMetadata:
+    metadata_dir = os.getenv('ADP_CONDENSER_METADATA_DIR')
+    if not dataset_name or not metadata_dir:
+        return ORIGINAL_LOAD_METADATA(
+            dataset_name,
+            required=required,
+            dataset_root=dataset_root,
+        )
+    metadata_path = Path(metadata_dir) / f'{dataset_name}.metadata.json'
+    if metadata_path.exists():
+        return DatasetMetadata(**json.loads(metadata_path.read_text()))
+    return ORIGINAL_LOAD_METADATA(
+        dataset_name,
+        required=required,
+        dataset_root=dataset_root,
+    )
+
+
+condensation_sft.load_dataset_metadata = load_cached_metadata
 
 
 def main() -> None:
