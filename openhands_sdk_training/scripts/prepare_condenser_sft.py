@@ -142,7 +142,11 @@ def metadata_path(dataset: str) -> Path:
 def ensure_metadata(dataset: str, api_functions: set[str], code_languages: set[str]) -> dict[str, Any]:
     existing = metadata_path(dataset)
     if existing.exists():
-        return json.loads(existing.read_text())
+        metadata = json.loads(existing.read_text())
+        out_path = LOCAL_METADATA_ROOT / f'{dataset}.metadata.json'
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(metadata, indent=2) + '\n')
+        return metadata
 
     api_tools = load_api_tools(dataset)
     missing = sorted(api_functions - set(api_tools))
