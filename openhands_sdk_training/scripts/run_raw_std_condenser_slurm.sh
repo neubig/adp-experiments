@@ -8,7 +8,7 @@ fi
 
 REPO=${ADP_REPO:-/home/gneubig/work/adp/agent-data-protocol-pr244}
 EXP_ROOT=${ADP_EXP_ROOT:-/home/gneubig/exp/adp}
-PYTHON=${ADP_PYTHON:-/home/gneubig/work/adp/.venvs/openhands_sdk_training/bin/python}
+PYTHON=${ADP_PYTHON:-/home/gneubig/work/adp/agent-data-protocol-pr244/.venv/bin/python}
 OUT_ROOT=${ADP_OUT_ROOT:-$EXP_ROOT/datasets/software_agent_condenser_12k}
 OUT_DIR=$OUT_ROOT/$DATASET
 LOG_DIR=$OUT_ROOT/logs
