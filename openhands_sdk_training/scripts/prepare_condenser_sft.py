@@ -17,6 +17,9 @@ SPLIT_ROOT = EXP_ROOT / 'datasets/paper_openhands_nonweb_v1'
 OUTPUT_ROOT = EXP_ROOT / 'datasets/condenser_sft/openhands_nonweb_12k_llm'
 STANDARDIZED_ROOT = OUTPUT_ROOT / 'standardized'
 LOCAL_METADATA_ROOT = OUTPUT_ROOT / 'metadata'
+SUPPORTED_CONDENSER_CODE_LANGUAGES = {'bash', 'sh', 'shell', 'python', 'python3', 'py'}
+
+
 
 MEDIA_TAG_REPLACEMENTS = {
     '<image>': '&lt;image&gt;',
@@ -156,7 +159,10 @@ def ensure_metadata(dataset: str, api_functions: set[str], code_languages: set[s
         print(f'WARNING {dataset}: API functions missing from api.py: {missing}')
 
     custom_tools = [api_tools[name] for name in sorted(api_functions & set(api_tools))]
-    code_enabled = sorted({'bash' if lang == 'bash' else lang for lang in code_languages})
+    code_enabled = sorted(
+        {'bash' if lang in {'bash', 'sh', 'shell'} else lang for lang in code_languages}
+        & SUPPORTED_CONDENSER_CODE_LANGUAGES
+    )
     metadata = {
         'custom_tools': custom_tools,
         'code_enabled': code_enabled,
