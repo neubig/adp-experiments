@@ -25,6 +25,22 @@ if [ -z "${LLM_API_KEY:-}" ]; then
   exit 1
 fi
 
+if [ ! -f "$BASE/prepare_manifest.json" ]; then
+  echo "Missing $BASE/prepare_manifest.json; run scripts/prepare_condenser_sft.py first." >&2
+  exit 1
+fi
+
+if compgen -G "$BASE/metadata/*.metadata.json" > /dev/null; then
+  for metadata in "$BASE"/metadata/*.metadata.json; do
+    dataset=$(basename "$metadata" .metadata.json)
+    target="$REPO/datasets/$dataset/metadata.json"
+    if [ ! -f "$target" ]; then
+      cp "$metadata" "$target"
+    fi
+  done
+fi
+
+
 for input in "$BASE"/standardized/*.jsonl; do
   name=$(basename "$input" .jsonl)
   split=${name%%_*}
