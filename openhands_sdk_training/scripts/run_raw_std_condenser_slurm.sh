@@ -74,6 +74,99 @@ if [ "$std_status" -ne 0 ] || [ "$std_lines" -eq 0 ]; then
 fi
 mv "$STD_JSONL.tmp" "$STD_JSONL"
 
+if [ ! -f "$REPO/datasets/$DATASET/metadata.json" ]; then
+  PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" - "$REPO" "$DATASET" "$STD_JSONL" <<'PY'
+import ast
+import json
+import sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+dataset = sys.argv[2]
+std_path = Path(sys.argv[3])
+metadata_path = repo / 'datasets' / dataset / 'metadata.json'
+api_path = repo / 'datasets' / dataset / 'api.py'
+SUPPORTED_CODE = {'bash', 'sh', 'shell', 'python', 'python3', 'py'}
+ALIASES = {'submit', 'stop', 'finish', 'str_replace_editor', 'think', 'task_tracker'}
+
+
+def schema_for_annotation(annotation):
+    if annotation is None:
+        return {}
+    text = ast.unparse(annotation)
+    if text in {'str', 'Optional[str]'}:
+        return {'type': 'string'}
+    if text in {'int', 'Optional[int]'}:
+        return {'type': 'integer'}
+    if text in {'float', 'Optional[float]'}:
+        return {'type': 'number'}
+    if text in {'bool', 'Optional[bool]'}:
+        return {'type': 'boolean'}
+    if text in {'list', 'List', 'Optional[list]'} or text.startswith(('list[', 'List[')):
+        return {'type': 'array'}
+    if text in {'dict', 'Dict', 'Optional[dict]'} or text.startswith(('dict[', 'Dict[')):
+        return {'type': 'object'}
+    return {}
+
+
+def load_api_tools():
+    if not api_path.exists():
+        return {}
+    tree = ast.parse(api_path.read_text())
+    tools = {}
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        properties = {}
+        required = []
+        defaults_start = len(node.args.args) - len(node.args.defaults)
+        for index, arg in enumerate(node.args.args):
+            properties[arg.arg] = schema_for_annotation(arg.annotation)
+            if index < defaults_start:
+                required.append(arg.arg)
+        tools[node.name] = {
+            'type': 'function',
+            'function': {
+                'name': node.name,
+                'description': ast.get_docstring(node) or f'Dataset tool {node.name}.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': properties,
+                    'additionalProperties': False,
+                    'required': required,
+                },
+            },
+        }
+    return tools
+
+api_functions = set()
+code_languages = set()
+with std_path.open() as handle:
+    for line in handle:
+        row = json.loads(line)
+        for event in row.get('content', []):
+            if event.get('class_') == 'api_action':
+                api_functions.add(event.get('function'))
+            elif event.get('class_') == 'code_action':
+                lang = (event.get('language') or '').lower()
+                if lang in {'sh', 'shell'}:
+                    lang = 'bash'
+                if lang in SUPPORTED_CODE:
+                    code_languages.add(lang)
+api_functions.discard(None)
+api_tools = load_api_tools()
+custom_tools = [api_tools[name] for name in sorted(api_functions & set(api_tools))]
+metadata = {
+    'custom_tools': custom_tools,
+    'code_enabled': sorted(code_languages),
+    'browser_enabled': False,
+}
+metadata_path.write_text(json.dumps(metadata, indent=2) + '\n')
+print(f'wrote_metadata={metadata_path} custom_tools={len(custom_tools)} code_enabled={metadata["code_enabled"]}')
+PY
+fi
+
+
 (
   cd "$REPO" || exit 1
   MY_DATASET="$DATASET" PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" \
