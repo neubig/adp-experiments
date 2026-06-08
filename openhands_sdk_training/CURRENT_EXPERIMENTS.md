@@ -41,6 +41,39 @@ before LLaMA-Factory invokes Hugging Face `datasets.load_dataset`; otherwise
 heterogeneous nested tool schemas can be inferred as incompatible Arrow structs
 and fail before LLaMA-Factory's own converter runs.
 
+### Qwen3.5 32k Liger eval logits OOM
+
+For Qwen3.5 long-context runs with `enable_liger_kernel: true`, training can fit
+while evaluation OOMs. This is counterintuitive but expected from the current
+Liger Qwen3.5 forward path: training with labels uses Liger's fused causal-LM
+loss and skips materializing full `batch x sequence x vocab` logits, while eval
+defaults to computing logits before loss because `model.training` is false.
+With Qwen3.5-9B at `cutoff_len: 32768` and vocab size 248320, one bf16 logits
+tensor is about 15 GiB before cross-entropy workspace, padding, or distributed
+gathering.
+
+Use loss-only eval and patch LLaMA-Factory SFT eval to pass Liger's
+`skip_logits=True` forward argument:
+
+```bash
+source .venv/bin/activate
+python scripts/patch_llamafactory_liger_eval_skip_logits.py
+```
+
+Set the training YAML eval options to:
+
+```yaml
+prediction_loss_only: true
+per_device_eval_batch_size: 1
+eval_strategy: steps
+```
+
+`prediction_loss_only: true` prevents Hugging Face Trainer from retaining and
+gathering logits, but it is not sufficient by itself for Liger Qwen3.5 because
+the model forward would still compute logits internally. The patch makes the
+forward loss-only as well. Do not use this patched path for generated-prediction
+metrics; it is intended for scalar eval loss/perplexity during SFT.
+
 Manifest counts:
 
 ```text
