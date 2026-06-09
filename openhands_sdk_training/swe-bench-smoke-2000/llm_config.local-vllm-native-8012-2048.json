@@ -1,0 +1,11 @@
+{
+  "model": "openai/local-qwen35-4b",
+  "base_url": "http://127.0.0.1:8012/v1",
+  "api_key": "EMPTY",
+  "temperature": 0.0,
+  "max_output_tokens": 2048,
+  "timeout": 600,
+  "native_tool_calling": true,
+  "disable_vision": true,
+  "reasoning_effort": "none"
+}

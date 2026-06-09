@@ -1,0 +1,21 @@
+You are editing a Python repository at {{ instance.repo_path }}.
+
+Issue:
+<issue_description>
+{{ instance.problem_statement }}
+</issue_description>
+
+Implement the minimal source-code change needed to satisfy the issue. Do not edit tests.
+The Python environment is already set up; install no new packages unless the repository explicitly requires it.
+
+Use terminal commands and file_editor tools carefully:
+- Run shell commands from the repository root: cd {{ instance.repo_path }} first.
+- Use file_editor for source-code edits when possible.
+- Use terminal for grep, tests, imports, git diff, and other shell commands.
+- Do not repeat the same failing command; if a command fails because of path/import setup, fix the working directory or PYTHONPATH.
+- Never run git checkout, git reset, or any command that discards source changes.
+
+After editing, inspect the changed lines, run a focused syntax/import/reproduction check from {{ instance.repo_path }}, then run git diff.
+Leave a non-empty source-code diff in the repository before finishing.
+
+Base commit: {{ instance.base_commit }}

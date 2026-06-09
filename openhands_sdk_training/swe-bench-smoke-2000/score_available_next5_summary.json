@@ -1,0 +1,234 @@
+{
+  "dataset": "princeton-nlp/SWE-bench_Verified",
+  "split": "test",
+  "predictions": "/home/gneubig/exp/adp/evals/2000/swe-bench-smoke/princeton-nlp__SWE-bench_Verified-test/openai/local-qwen35-4b_sdk_c950fdb_maxiter_12_N_available_next5_native_tools_32k_tp2_repo_root_2048_max12/output.swebench.jsonl",
+  "score_dir": "/home/gneubig/exp/adp/evals/2000/swe-bench-smoke/apptainer_official_score_available_next5_32k_tp2",
+  "total": 5,
+  "resolved": 0,
+  "unresolved": 5,
+  "reports": {
+    "django__django-11999": {
+      "patch_is_None": false,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "tests_status": {
+        "FAIL_TO_PASS": {
+          "success": [],
+          "failure": [
+            "test_overriding_FIELD_display (model_fields.tests.GetFieldDisplayTests)"
+          ]
+        },
+        "PASS_TO_PASS": {
+          "success": [
+            "test_blank_in_choices (model_fields.tests.GetChoicesTests)",
+            "test_blank_in_grouped_choices (model_fields.tests.GetChoicesTests)",
+            "test_empty_choices (model_fields.tests.GetChoicesTests)",
+            "test_lazy_strings_not_evaluated (model_fields.tests.GetChoicesTests)",
+            "test_check (model_fields.tests.ChoicesTests)",
+            "test_choices (model_fields.tests.ChoicesTests)",
+            "test_flatchoices (model_fields.tests.ChoicesTests)",
+            "test_formfield (model_fields.tests.ChoicesTests)",
+            "test_invalid_choice (model_fields.tests.ChoicesTests)",
+            "Can supply a custom choices form class to Field.formfield()",
+            "deconstruct() uses __qualname__ for nested class support.",
+            "Field instances can be pickled.",
+            "test_field_name (model_fields.tests.BasicFieldTests)",
+            "Fields are ordered based on their creation.",
+            "test_field_repr (model_fields.tests.BasicFieldTests)",
+            "__repr__() uses __qualname__ for nested class support.",
+            "test_field_str (model_fields.tests.BasicFieldTests)",
+            "test_field_verbose_name (model_fields.tests.BasicFieldTests)",
+            "Field.formfield() sets disabled for fields with choices.",
+            "test_show_hidden_initial (model_fields.tests.BasicFieldTests)",
+            "test_choices_and_field_display (model_fields.tests.GetFieldDisplayTests)",
+            "test_empty_iterator_choices (model_fields.tests.GetFieldDisplayTests)",
+            "A translated display value is coerced to str.",
+            "test_iterator_choices (model_fields.tests.GetFieldDisplayTests)",
+            "test_get_choices (model_fields.tests.GetChoicesLimitChoicesToTests)",
+            "test_get_choices_reverse_related_field (model_fields.tests.GetChoicesLimitChoicesToTests)",
+            "test_get_choices (model_fields.tests.GetChoicesOrderingTests)",
+            "test_get_choices_default_ordering (model_fields.tests.GetChoicesOrderingTests)",
+            "test_get_choices_reverse_related_field (model_fields.tests.GetChoicesOrderingTests)",
+            "test_get_choices_reverse_related_field_default_ordering (model_fields.tests.GetChoicesOrderingTests)"
+          ],
+          "failure": []
+        },
+        "FAIL_TO_FAIL": {
+          "success": [],
+          "failure": []
+        },
+        "PASS_TO_FAIL": {
+          "success": [],
+          "failure": []
+        }
+      }
+    },
+    "django__django-13670": {
+      "patch_is_None": false,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "tests_status": {
+        "FAIL_TO_PASS": {
+          "success": [],
+          "failure": [
+            "test_year_before_1000 (utils_tests.test_dateformat.DateFormatTests)"
+          ]
+        },
+        "PASS_TO_PASS": {
+          "success": [
+            "test_am_pm (utils_tests.test_dateformat.DateFormatTests)",
+            "test_date (utils_tests.test_dateformat.DateFormatTests)",
+            "test_date_formats (utils_tests.test_dateformat.DateFormatTests)",
+            "test_dateformat (utils_tests.test_dateformat.DateFormatTests)",
+            "test_datetime_with_local_tzinfo (utils_tests.test_dateformat.DateFormatTests)",
+            "test_datetime_with_tzinfo (utils_tests.test_dateformat.DateFormatTests)",
+            "test_day_of_year_leap (utils_tests.test_dateformat.DateFormatTests)",
+            "test_empty_format (utils_tests.test_dateformat.DateFormatTests)",
+            "test_epoch (utils_tests.test_dateformat.DateFormatTests)",
+            "test_futuredates (utils_tests.test_dateformat.DateFormatTests)",
+            "test_invalid_time_format_specifiers (utils_tests.test_dateformat.DateFormatTests)",
+            "test_microsecond (utils_tests.test_dateformat.DateFormatTests)",
+            "test_naive_ambiguous_datetime (utils_tests.test_dateformat.DateFormatTests)",
+            "test_naive_datetime (utils_tests.test_dateformat.DateFormatTests)",
+            "test_r_format_with_non_en_locale (utils_tests.test_dateformat.DateFormatTests)",
+            "test_timezones (utils_tests.test_dateformat.DateFormatTests)"
+          ],
+          "failure": [
+            "test_time_formats (utils_tests.test_dateformat.DateFormatTests)"
+          ]
+        },
+        "FAIL_TO_FAIL": {
+          "success": [],
+          "failure": []
+        },
+        "PASS_TO_FAIL": {
+          "success": [],
+          "failure": []
+        }
+      }
+    },
+    "scikit-learn__scikit-learn-25973": {
+      "patch_is_None": false,
+      "patch_exists": false,
+      "patch_successfully_applied": false,
+      "resolved": false,
+      "skipped_empty_patch": true
+    },
+    "sphinx-doc__sphinx-7757": {
+      "patch_is_None": false,
+      "patch_exists": false,
+      "patch_successfully_applied": false,
+      "resolved": false,
+      "skipped_empty_patch": true
+    },
+    "sympy__sympy-15599": {
+      "patch_is_None": false,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "tests_status": {
+        "FAIL_TO_PASS": {
+          "success": [],
+          "failure": [
+            "test_Mod"
+          ]
+        },
+        "PASS_TO_PASS": {
+          "success": [
+            "test_bug1",
+            "test_Symbol",
+            "test_arit0",
+            "test_div",
+            "test_pow",
+            "test_pow2",
+            "test_pow3",
+            "test_mod_pow",
+            "test_pow_E",
+            "test_pow_issue_3516",
+            "test_pow_im",
+            "test_real_mul",
+            "test_ncmul",
+            "test_ncpow",
+            "test_powerbug",
+            "test_Mul_doesnt_expand_exp",
+            "test_Add_Mul_is_integer",
+            "test_Add_Mul_is_finite",
+            "test_Mul_is_even_odd",
+            "test_evenness_in_ternary_integer_product_with_even",
+            "test_oddness_in_ternary_integer_product_with_even",
+            "test_Mul_is_rational",
+            "test_Add_is_rational",
+            "test_Add_is_even_odd",
+            "test_Mul_is_negative_positive",
+            "test_Mul_is_negative_positive_2",
+            "test_Mul_is_nonpositive_nonnegative",
+            "test_Add_is_negative_positive",
+            "test_Add_is_nonpositive_nonnegative",
+            "test_Pow_is_integer",
+            "test_Pow_is_real",
+            "test_real_Pow",
+            "test_Pow_is_finite",
+            "test_Pow_is_even_odd",
+            "test_Pow_is_negative_positive",
+            "test_Pow_is_zero",
+            "test_Pow_is_nonpositive_nonnegative",
+            "test_Mul_is_imaginary_real",
+            "test_Mul_hermitian_antihermitian",
+            "test_Add_is_comparable",
+            "test_Mul_is_comparable",
+            "test_Pow_is_comparable",
+            "test_Add_is_positive_2",
+            "test_Add_is_irrational",
+            "test_issue_3531b",
+            "test_bug3",
+            "test_suppressed_evaluation",
+            "test_Add_as_coeff_mul",
+            "test_Pow_as_coeff_mul_doesnt_expand",
+            "test_issue_3514",
+            "test_make_args",
+            "test_issue_5126",
+            "test_Rational_as_content_primitive",
+            "test_Add_as_content_primitive",
+            "test_Mul_as_content_primitive",
+            "test_Pow_as_content_primitive",
+            "test_issue_5460",
+            "test_product_irrational",
+            "test_issue_5919",
+            "test_Mod_is_integer",
+            "test_Mod_is_nonposneg",
+            "test_issue_6001",
+            "test_polar",
+            "test_issue_6040",
+            "test_issue_6082",
+            "test_issue_6077",
+            "test_mul_flatten_oo",
+            "test_add_flatten",
+            "test_issue_5160_6087_6089_6090",
+            "test_float_int",
+            "test_issue_6611a",
+            "test_denest_add_mul",
+            "test_mul_coeff",
+            "test_mul_zero_detection",
+            "test_Mul_with_zero_infinite",
+            "test_Mul_does_not_cancel_infinities",
+            "test_Mul_does_not_distribute_infinity",
+            "test_issue_8247_8354",
+            "test_Add_is_zero",
+            "test_issue_14392"
+          ],
+          "failure": []
+        },
+        "FAIL_TO_FAIL": {
+          "success": [],
+          "failure": []
+        },
+        "PASS_TO_FAIL": {
+          "success": [],
+          "failure": []
+        }
+      }
+    }
+  }
+}
