@@ -32,7 +32,9 @@ The full runs rely on draft PRs rather than untracked local edits:
   Epoch GHCR SWE-bench image mirror.
 - OpenHands/benchmarks#751: capture `git_patch` from failed, timed-out, or
   stuck SWE-bench rows so generated patches can still be scored, and bind a
-  per-instance host directory onto `/workspace` for Apptainer inference.
+  per-instance host directory onto `/workspace` for Apptainer inference. The
+  branch also includes the final SIF-image delta used by the live run
+  (`75930f2`).
 - OpenHands/software-agent-sdk#3641: Apptainer tokenizer binds and
   chat-template token counting for condenser thresholds.
 
@@ -170,8 +172,8 @@ The prebuild was launched before inference:
 sbatch --array=0-7%8 /home/gneubig/exp/adp/evals/slurm/swebench_prebuild_apptainer_epoch.sbatch
 ```
 
-The current base and fine-tuned jobs were submitted after the patch-capture and
-Apptainer workspace-bind fixes:
+The current base and fine-tuned jobs were submitted after the patch-capture,
+SIF-image, and Apptainer workspace-bind fixes:
 
 ```bash
 sbatch --export=ALL,RUN_NAME=q35_base_swe_epoch_tp2_cond28k_thinkoff_cachedpatch_bind_2gpu4w_r4,NOTE=q35_base_swe_epoch_tp2_cond28k_thinkoff_cachedpatch_bind_2gpu4w_r4,N_LIMIT=0,NUM_WORKERS=4,TENSOR_PARALLEL_SIZE=2 \
@@ -217,16 +219,20 @@ cat /home/gneubig/exp/adp/evals/full-swebench/q35_ft_ckpt2000_swe_epoch_tp2_cond
 At the latest monitoring point, the Apptainer prebuild was healthy and the
 current full base and fine-tuned inference jobs were running on the `general`
 GPU partition with two L40S GPUs each. The logs confirmed `NUM_WORKERS=4`,
-`TENSOR_PARALLEL_SIZE=2`, `CUDA_VISIBLE_DEVICES=0,1`, and vLLM serving on both
-allocated GPUs.
+`TENSOR_PARALLEL_SIZE=2`, `CUDA_VISIBLE_DEVICES=0,1`, and vLLM serving multiple
+concurrent requests.
 
 The current runs no longer show the earlier Apptainer `/workspace` permission
 failure or missing-image build failures. Early inference results are still poor:
-the first four completed rows in each run failed with `Remote conversation got
-stuck`, and all eight captured patches were empty. Inspection of representative
-trajectories showed repeated inspect/search/view actions and stuck-detector
-termination before a useful repo edit was made, so these early empty diffs look
-like model behavior rather than another patch-capture failure.
+completed rows fail with `Remote conversation got stuck`, but failed-run patch
+capture is active for every completed row. At 08:04 EDT on 2026-06-12, the base
+run had 12 completed rows, 2 non-empty captured patches, and 12 rows marked
+`git_patch_captured_on_error`; the fine-tuned run had 7 completed rows, 0
+non-empty captured patches, and 7 rows marked `git_patch_captured_on_error`.
+Inspection of a zero-patch fine-tuned trajectory showed repeated
+inspect/search/view actions and stuck-detector termination before any repo edit,
+so those empty diffs look like model behavior rather than another
+patch-capture failure.
 
 Earlier `errpatch_r1` and `cachedpatch_r2/r3` attempts were cancelled after
 finding the failed-run patch capture bug and the Apptainer `/workspace`
