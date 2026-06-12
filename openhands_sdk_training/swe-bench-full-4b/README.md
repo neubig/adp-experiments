@@ -27,14 +27,14 @@ tokens match the fine-tuning/evaluation format.
 The full runs rely on draft PRs rather than untracked local edits:
 
 - OpenHands/benchmarks#745: Apptainer agent-server image builds, SIF reuse,
-  tokenizer/condenser CLI wiring, and lower `uv` build concurrency.
+  tokenizer/condenser CLI wiring, lower `uv` build concurrency, and
+  per-instance writable `/workspace` binds for Apptainer inference.
 - OpenHands/benchmarks#743: Apptainer SWE-bench scoring and support for the
   Epoch GHCR SWE-bench image mirror.
-- OpenHands/benchmarks#751: capture `git_patch` from failed, timed-out, or
-  stuck SWE-bench rows so generated patches can still be scored, and bind a
-  per-instance host directory onto `/workspace` for Apptainer inference. The
-  branch also includes the final SIF-image delta used by the live run
-  (`75930f2`).
+- OpenHands/benchmarks#751: generic failed-run patch capture for SWE-bench.
+  This preserves `test_result.git_patch` for failed, timed-out, or stuck rows
+  and uses the staged index diff so generated patches can still be scored. It
+  targets `main` independently of the Apptainer image-build PR.
 - OpenHands/software-agent-sdk#3641: Apptainer tokenizer binds and
   chat-template token counting for condenser thresholds.
 
@@ -179,7 +179,10 @@ sbatch --array=0-7%8 /home/gneubig/exp/adp/evals/slurm/swebench_prebuild_apptain
 ```
 
 The current base and fine-tuned jobs were submitted after the patch-capture,
-SIF-image, and Apptainer workspace-bind fixes:
+SIF-image, and Apptainer workspace-bind fixes. The original local integration
+branch was later split into independent review PRs: #745 now owns the
+Apptainer-specific runtime/image changes, while #751 owns the generic
+failed-run patch capture.
 
 ```bash
 sbatch --export=ALL,RUN_NAME=q35_base_swe_epoch_tp2_cond28k_thinkoff_cachedpatch_bind_2gpu4w_r4,NOTE=q35_base_swe_epoch_tp2_cond28k_thinkoff_cachedpatch_bind_2gpu4w_r4,N_LIMIT=0,NUM_WORKERS=4,TENSOR_PARALLEL_SIZE=2 \
