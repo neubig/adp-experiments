@@ -129,6 +129,7 @@ Scoring:
 ```text
 8331644: adp-swe-score for base run, dependency afterany:8331642
 8331645: adp-swe-score for fine-tuned run, dependency afterany:8331643
+8331751: adp-swe-score partial base-run scoring smoke, completed
 ```
 
 The live inference jobs request the `general` partition, two GPUs constrained
@@ -238,6 +239,18 @@ Inspection of a zero-patch fine-tuned trajectory showed repeated
 inspect/search/view actions and stuck-detector termination before any repo edit,
 so those empty diffs look like model behavior rather than another
 patch-capture failure.
+
+A partial base-run scoring smoke was launched against the top-level base run
+directory to validate the scorer before full inference finishes:
+
+```text
+8331751: completed in 1m34s, 3 patch candidates, 3 patches applied,
+2 resolved, 0 score errors
+```
+
+This smoke verified that recursive source discovery finds the nested
+`output.jsonl` and `output_errors.jsonl` files and that both completed-row
+patches and failed-run captured patches are evaluated by the Apptainer scorer.
 
 Earlier `errpatch_r1` and `cachedpatch_r2/r3` attempts were cancelled after
 finding the failed-run patch capture bug and the Apptainer `/workspace`
