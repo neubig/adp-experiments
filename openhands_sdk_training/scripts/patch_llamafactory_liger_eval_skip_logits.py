@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch LLaMA-Factory for ADP long-context Liger loss-only paths.
+"""Patch training libraries for ADP long-context Qwen3.5 runs.
 
 Qwen3.5 long-context SFT runs with Liger avoid materializing full
 batch x sequence x vocab logits during training. In eval, Hugging Face Trainer
@@ -15,6 +15,12 @@ Recent Liger releases include Qwen3.5-MoE fused-linear-cross-entropy support,
 but some LLaMA-Factory versions only dispatch Liger for the dense ``qwen3_5``
 model type. Without this, Qwen3.5-MoE training materializes full logits and
 OOMs before the first 32k step.
+
+Finally, it lets a DeepSpeed ZeRO-3 run continue from a Hugging Face-format
+model-only checkpoint when the model is already loaded from that checkpoint.
+This preserves Trainer's data skipping via ``resume_from_checkpoint`` even when
+the previous run used ``save_only_model: true`` and therefore did not write
+DeepSpeed optimizer/scheduler state.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ import sys
 
 PATCH_MARKER = "# ADP patch: force Liger loss-only eval to skip logits."
 MOE_PATCH_MARKER = "# ADP patch: enable Liger for Qwen3.5-MoE."
+DS_MODEL_ONLY_PATCH_MARKER = "# ADP patch: tolerate HF model-only checkpoint for DeepSpeed resume."
 OLD = """        loss, generated_tokens, _ = super().prediction_step(
             model, inputs, prediction_loss_only=prediction_loss_only, ignore_keys=ignore_keys, **gen_kwargs
         )
@@ -47,6 +54,28 @@ MOE_NEW = f"""    elif model_type == "qwen3_5":
     elif model_type in ["qwen3_5_moe", "qwen3_5_moe_text"]:
         {MOE_PATCH_MARKER}
         from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5_moe as apply_liger_kernel
+"""
+DS_MODEL_ONLY_OLD = """    else:
+        raise ValueError(f"Can't find a valid checkpoint at {checkpoint_path}")
+"""
+DS_MODEL_ONLY_NEW = f"""    else:
+        hf_model_only_checkpoint = (
+            glob.glob(f"{{checkpoint_path}}/model*.safetensors")
+            or glob.glob(f"{{checkpoint_path}}/pytorch_model*.bin")
+            or glob.glob(f"{{checkpoint_path}}/adapter_model*.safetensors")
+        )
+        if hf_model_only_checkpoint:
+            {DS_MODEL_ONLY_PATCH_MARKER}
+            logger.warning(
+                "No DeepSpeed global_step* state found at %s, but Hugging Face-format "
+                "model weights are present. Continuing without DeepSpeed optimizer/"
+                "scheduler state; set model_name_or_path to this checkpoint so model "
+                "weights are loaded before Trainer skips previously seen batches.",
+                checkpoint_path,
+            )
+            return
+
+        raise ValueError(f"Can't find a valid checkpoint at {{checkpoint_path}}")
 """
 
 
@@ -86,6 +115,13 @@ def main() -> int:
             MOE_NEW,
             MOE_PATCH_MARKER,
             "Qwen3.5-MoE Liger dispatch",
+        ),
+        patch_file(
+            "transformers.integrations.deepspeed",
+            DS_MODEL_ONLY_OLD,
+            DS_MODEL_ONLY_NEW,
+            DS_MODEL_ONLY_PATCH_MARKER,
+            "DeepSpeed HF model-only checkpoint continuation",
         ),
     )
 
