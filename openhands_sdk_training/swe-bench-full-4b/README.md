@@ -223,40 +223,39 @@ cat /home/gneubig/exp/adp/evals/full-swebench/q35_base_swe_epoch_tp2_cond28k_thi
 cat /home/gneubig/exp/adp/evals/full-swebench/q35_ft_ckpt2000_swe_epoch_tp2_cond28k_in28k_thinkoff_cachedpatch_bind_2gpu4w_r4/apptainer_patch_eval/patch_eval_summary.json
 ```
 
-## Status
+## Results
 
-At the latest monitoring point, the Apptainer prebuild was healthy and the
-current full base and fine-tuned inference jobs were running on the `general`
-GPU partition with two L40S GPUs each. The logs confirmed `NUM_WORKERS=4`,
-`TENSOR_PARALLEL_SIZE=2`, `CUDA_VISIBLE_DEVICES=0,1`, and vLLM serving multiple
-concurrent requests.
+The latest scoring rerun was launched on 2026-06-13 against the current
+`output.jsonl` and `output_errors.jsonl` files for the temperature 0.0 and
+temperature 1.0 runs. The rerun wrote results under
+`apptainer_patch_eval_rerun_20260613_080646` in each run directory and completed
+with zero scorer errors.
 
-The current runs no longer show the earlier Apptainer `/workspace` permission
-failure or missing-image build failures. Early inference results are still poor:
-completed rows fail with `Remote conversation got stuck`, but failed-run patch
-capture is active for every completed row. At 08:04 EDT on 2026-06-12, the base
-run had 12 completed rows, 2 non-empty captured patches, and 12 rows marked
-`git_patch_captured_on_error`; the fine-tuned run had 7 completed rows, 0
-non-empty captured patches, and 7 rows marked `git_patch_captured_on_error`.
-Inspection of a zero-patch fine-tuned trajectory showed repeated
-inspect/search/view actions and stuck-detector termination before any repo edit,
-so those empty diffs look like model behavior rather than another
-patch-capture failure.
+The non-empty denominator is the deduplicated set of non-empty patches evaluated
+by the Apptainer scorer. The all-patches denominator is every row that contains
+`test_result.git_patch`, including empty patches.
 
-A partial base-run scoring smoke was launched against the top-level base run
-directory to validate the scorer before full inference finishes:
+| Run | Resolved | Non-empty patch denom. | Score / non-empty | All patch-field denom. | Score / all | Applied | Score errors |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Temp 0.0 base/raw | 25 | 96 | 26.04% | 500 | 5.00% | 96 | 0 |
+| Temp 0.0 fine-tuned ckpt-2000 | 14 | 79 | 17.72% | 500 | 2.80% | 79 | 0 |
+| Temp 1.0 base/raw, no enforce-eager | 13 | 84 | 15.48% | 119 | 10.92% | 82 | 0 |
+| Temp 1.0 fine-tuned ckpt-2000, no enforce-eager | 13 | 146 | 8.90% | 181 | 7.18% | 145 | 0 |
 
-```text
-8331751: completed in 1m34s, 3 patch candidates, 3 patches applied,
-2 resolved, 0 score errors
-```
+Raw patch capture counts from the same files:
 
-This smoke verified that recursive source discovery finds the nested
-`output.jsonl` and `output_errors.jsonl` files and that both completed-row
-patches and failed-run captured patches are evaluated by the Apptainer scorer.
+| Run | Raw rows | Raw non-empty patches | Raw empty patches | Missing patch field |
+| --- | ---: | ---: | ---: | ---: |
+| Temp 0.0 base/raw | 500 | 96 | 404 | 0 |
+| Temp 0.0 fine-tuned ckpt-2000 | 500 | 79 | 421 | 0 |
+| Temp 1.0 base/raw, no enforce-eager | 122 | 95 | 24 | 3 |
+| Temp 1.0 fine-tuned ckpt-2000, no enforce-eager | 183 | 166 | 15 | 2 |
+
+The temperature 1.0 raw non-empty counts are higher than the scorer denominators
+because the scorer deduplicates by `(instance_id, patch_sha1)` before running
+SWE-bench validation.
 
 Earlier `errpatch_r1` and `cachedpatch_r2/r3` attempts were cancelled after
 finding the failed-run patch capture bug and the Apptainer `/workspace`
-permission issue. Final patch counts and resolved/unresolved SWE-bench results
-should be added here after jobs `8331642`, `8331643`, `8331644`, and `8331645`
-finish.
+permission issue. The final reported numbers above come from runs after the
+patch-capture, image-build, and workspace-bind fixes.
