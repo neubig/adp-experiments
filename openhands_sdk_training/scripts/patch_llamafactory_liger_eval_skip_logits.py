@@ -33,6 +33,9 @@ import sys
 PATCH_MARKER = "# ADP patch: force Liger loss-only eval to skip logits."
 MOE_PATCH_MARKER = "# ADP patch: enable Liger for Qwen3.5-MoE."
 DS_MODEL_ONLY_PATCH_MARKER = "# ADP patch: tolerate HF model-only checkpoint for DeepSpeed resume."
+DS_MODEL_ONLY_SCHEDULER_PATCH_MARKER = (
+    "# ADP patch: skip missing DeepSpeed scheduler state for HF model-only checkpoint."
+)
 OLD = """        loss, generated_tokens, _ = super().prediction_step(
             model, inputs, prediction_loss_only=prediction_loss_only, ignore_keys=ignore_keys, **gen_kwargs
         )
@@ -76,6 +79,42 @@ DS_MODEL_ONLY_NEW = f"""    else:
             return
 
         raise ValueError(f"Can't find a valid checkpoint at {{checkpoint_path}}")
+"""
+DS_MODEL_ONLY_SCHEDULER_OLD = """        if self.is_deepspeed_enabled:
+            # deepspeed loads optimizer/lr_scheduler together with the model in deepspeed_init
+            if not isinstance(self.lr_scheduler, DeepSpeedSchedulerWrapper):
+                with warnings.catch_warnings(record=True) as caught_warnings:
+                    check_torch_load_is_safe()
+                    self.lr_scheduler.load_state_dict(
+                        torch.load(os.path.join(checkpoint, SCHEDULER_NAME), weights_only=True)
+                    )
+                reissue_pt_warnings(caught_warnings)
+            return
+"""
+DS_MODEL_ONLY_SCHEDULER_NEW = f"""        if self.is_deepspeed_enabled:
+            # deepspeed loads optimizer/lr_scheduler together with the model in deepspeed_init
+            if not isinstance(self.lr_scheduler, DeepSpeedSchedulerWrapper):
+                scheduler_path = os.path.join(checkpoint, SCHEDULER_NAME)
+                if not os.path.isfile(scheduler_path):
+                    hf_model_only_checkpoint = (
+                        glob.glob(f"{{checkpoint}}/model*.safetensors")
+                        or glob.glob(f"{{checkpoint}}/pytorch_model*.bin")
+                        or glob.glob(f"{{checkpoint}}/adapter_model*.safetensors")
+                    )
+                    if hf_model_only_checkpoint:
+                        {DS_MODEL_ONLY_SCHEDULER_PATCH_MARKER}
+                        logger.warning(
+                            "No DeepSpeed scheduler state found at %s. Continuing with the "
+                            "new scheduler because this is a Hugging Face-format model-only checkpoint.",
+                            scheduler_path,
+                        )
+                        return
+
+                with warnings.catch_warnings(record=True) as caught_warnings:
+                    check_torch_load_is_safe()
+                    self.lr_scheduler.load_state_dict(torch.load(scheduler_path, weights_only=True))
+                reissue_pt_warnings(caught_warnings)
+            return
 """
 
 
@@ -122,6 +161,13 @@ def main() -> int:
             DS_MODEL_ONLY_NEW,
             DS_MODEL_ONLY_PATCH_MARKER,
             "DeepSpeed HF model-only checkpoint continuation",
+        ),
+        patch_file(
+            "transformers.trainer",
+            DS_MODEL_ONLY_SCHEDULER_OLD,
+            DS_MODEL_ONLY_SCHEDULER_NEW,
+            DS_MODEL_ONLY_SCHEDULER_PATCH_MARKER,
+            "DeepSpeed HF model-only scheduler continuation",
         ),
     )
 
