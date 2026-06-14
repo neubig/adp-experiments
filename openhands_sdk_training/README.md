@@ -52,6 +52,9 @@ Use the repository-level workspace convention:
   the Qwen3.5 0.8B training YAML.
 - `scripts/run_training.sh`: launch the 10k-step run in the background.
 - `scripts/monitor_training.sh`: inspect the running job, logs, and ROCm memory.
+- `scripts/analyze_debug_monitors.py`: summarize Slurm debug monitor logs from
+  `nvidia-smi dmon`, `sar`, and `pidstat` for GPU, network, and CPU bottleneck
+  analysis.
 
 ## Babel Slurm Run History
 
@@ -124,6 +127,15 @@ Monitor the run:
 ```bash
 bash scripts/monitor_training.sh ~/exp/adp/runs/openhands_sdk_training/qwen35_0_8b_openhands_nonweb_full_10k_bs1_seq2048_mm_safe/logs/train_10k_mm_safe
 tail -f ~/exp/adp/runs/openhands_sdk_training/qwen35_0_8b_openhands_nonweb_full_10k_bs1_seq2048_mm_safe/logs/train_10k_mm_safe.log
+```
+
+For Slurm jobs that write per-node debug monitor directories, summarize the raw
+system metrics with:
+
+```bash
+python scripts/analyze_debug_monitors.py \
+  ~/exp/adp/runs/openhands_sdk_training/<run>/logs/debug_<variant>_<job_id> \
+  --trainer-log ~/exp/adp/runs/openhands_sdk_training/<run>/output/trainer_log.jsonl
 ```
 
 ## Data Mixtures
