@@ -182,9 +182,27 @@ FUSED_MOE_LIGER_EXPERTS_NEW = f"""    "Qwen3_5MoeForCausalLM": {{
 """
 
 
-def patch_file(module: str, old: str, new: str, marker: str, description: str) -> int:
-    spec = importlib.util.find_spec(module)
+def patch_file(
+    module: str,
+    old: str,
+    new: str,
+    marker: str,
+    description: str,
+    *,
+    missing_ok: bool = False,
+) -> int:
+    try:
+        spec = importlib.util.find_spec(module)
+    except ModuleNotFoundError as exc:
+        if missing_ok:
+            print(f"Skipping optional {description}: {module} import failed ({exc}).")
+            return 0
+        raise
+
     if spec is None or spec.origin is None:
+        if missing_ok:
+            print(f"Skipping optional {description}: could not find {module} on PYTHONPATH.")
+            return 0
         print(f"Could not find {module} on PYTHONPATH", file=sys.stderr)
         return 1
 
@@ -246,6 +264,7 @@ def main() -> int:
             SKIP_FINAL_SAVE_NEW,
             SKIP_FINAL_SAVE_PATCH_MARKER,
             "hyper-parallel SFT benchmark final save skip",
+            missing_ok=True,
         ),
         patch_file(
             "llamafactory.train.sft.workflow",
@@ -260,6 +279,7 @@ def main() -> int:
             SKIP_FINAL_PLOT_NEW,
             SKIP_FINAL_PLOT_PATCH_MARKER,
             "hyper-parallel SFT benchmark plot_loss skip",
+            missing_ok=True,
         ),
         patch_file(
             "llamafactory.v1.plugins.model_plugins.kernels.ops.mlp.cuda_fused_moe",

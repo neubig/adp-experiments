@@ -128,6 +128,61 @@ from about 75s to about 51s in the 35B-A3B 32k benchmark. Do not combine this
 with manual large ZeRO bucket tuning without re-testing; larger bucket variants
 OOMed or hit CUDA errors in smoke runs.
 
+### 2026-06-14 FSDP2 and WSD notes
+
+An upstream LLaMA-Factory `main` FSDP2 smoke run was attempted for
+`Qwen3.5-35B-A3B` full SFT at the same 32k context length and global batch as
+the hpZ8 run:
+
+```text
+job: 123812
+run: adp-bench-qwen35-35b-a3b-fsdp2-full-seq32768-2node-h100
+nodes: orchard-flame-[5,0]
+config: qwen35_35b_a3b_bench_fsdp2_full_seq32768_2node_h100.yaml
+accelerate: accelerate_fsdp2_qwen35_moe_2node_h100.yaml
+```
+
+This is a negative result for now. The job reached training/backward, then OOMed
+inside Liger fused MoE backward at microbatch size 1:
+
+```text
+liger_kernel/ops/fused_moe.py backward
+torch.OutOfMemoryError: Tried to allocate 724 MiB to 1024 MiB
+process has roughly 78.7-79.2 GiB in use on 80 GiB H100
+```
+
+Other ranks then reported NCCL `_ALLGATHER_BASE` remote-close errors, but those
+were a consequence of the OOM ranks exiting. This FSDP2 recipe is therefore not
+yet a replacement for hpZ8 at 32k unless memory is reduced elsewhere, for
+example by changing the MoE kernel, reducing context length, or adding a
+working sequence/context-parallel implementation.
+
+The optional HyperParallel backend is not required for the current stable
+DeepSpeed hpZ8 run. If it is tested later, install from the GitCode
+`mindspore/hyper-parallel` source rather than PyPI: the advertised
+`hyper_parallel` package was not present on PyPI, and the GitHub mirror lagged
+the LLaMA-Factory integration API at the time of testing. The patch helper now
+treats LLaMA-Factory HyperParallel modules as optional so missing or mismatched
+HyperParallel does not block ordinary SFT patching.
+
+For the next full run, use the best stable hpZ8 DeepSpeed recipe and switch only
+the scheduler to WSD:
+
+```yaml
+deepspeed: ds_z3_config_qwen35_hpz8.json
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+lr_scheduler_type: warmup_stable_decay
+warmup_ratio: 0.03
+eval_steps: 100
+save_only_model: false
+```
+
+Both installed LLaMA-Factory `0.9.5` and the upstream `main` overlay include the
+WSD scheduler hook. Without explicit `lr_scheduler_kwargs`, the local
+LLaMA-Factory helper defaults to one third of post-warmup steps as stable LR and
+the remaining two thirds as decay.
+
 Manifest counts:
 
 ```text
