@@ -232,6 +232,27 @@ and `mcore_adapter.models.AutoConfig` reported
 that this makes the venv formally inconsistent with Torch 2.12's declared
 `nvidia-cublas<=13.1.1.3` dependency, so keep it isolated to MCA experiments.
 
+After the TE runtime fix, MCA smoke `123828` got past the earlier
+`TESpecProvider` failure and began constructing `Qwen3_5MoeConfig`, but failed
+before training with:
+
+```text
+AssertionError: wsd_decay_steps is required for WSD
+```
+
+The MCA/Megatron scheduler path does not apply LLaMA-Factory's default WSD
+split, so WSD must be explicit in MCA configs. The 12-step MCA smoke now uses:
+
+```yaml
+lr_scheduler_type: warmup_stable_decay
+lr_scheduler_kwargs:
+  wsd_decay_steps: 8
+  lr_wsd_decay_style: cosine
+```
+
+This corrected MCA smoke was resubmitted as job `123829` with run name
+`adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke6`.
+
 The first two-node MCA smoke is:
 
 ```text
