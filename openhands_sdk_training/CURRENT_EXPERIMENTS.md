@@ -418,6 +418,31 @@ config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2
 launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke4_fa4.sbatch
 ```
 
+Job `123842` (`smoke4_fa4`) completed:
+
+```text
+state: COMPLETED
+elapsed: 00:11:19
+exit_code: 0:0
+train_runtime: 542.1s
+train_steps_per_second: 0.022
+train_loss: 0.7082
+```
+
+The 12-step total runtime was worse than smoke2/smoke3 because startup and
+early steps were slower. The later per-step `token_per_sec_per_gpu` values were
+however higher than smoke3 on the same step range, roughly 17.5k average across
+steps 8-12 versus roughly 16.5k for smoke3. FA4 did not eliminate all attention
+warnings: the log still emitted a `flash-attn v3` warning. Peak memory rose
+slightly to about 80.5GB on the tight late-stage ranks. Because the full-run
+startup cost would be amortized, the next FA4 smoke extends the same setup to
+50 steps:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke5_fa4_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke5_fa4_50step.sbatch
+```
+
 Open MCA memory/speed candidates after the TP2 smoke:
 
 - Implement context-parallel gated-delta attention for Qwen3.5/MCA so the 32k
