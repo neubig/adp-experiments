@@ -489,6 +489,45 @@ warning. For now, keep the regular `.venv_mca` TP2/PP4/EP2 recipe as the
 practical baseline; FA4 is not worth carrying into full runs unless a newer
 Transformer Engine / FA4 stack becomes cleaner.
 
+FA3 source build note: a full Hopper `flash-attn-3` source build tried to
+compile 293 objects including SM80 and many unused dtypes/head dimensions. For
+the H100-only Qwen3.5-35B-A3B comparison, the `.venv_mca_fa3` environment was
+instead built from the FA3 Hopper source with only SM90, bf16, hdim256, and
+training backward enabled:
+
+```bash
+export FLASH_ATTENTION_FORCE_BUILD=TRUE
+export FLASH_ATTENTION_DISABLE_SM80=TRUE
+export FLASH_ATTENTION_DISABLE_FP16=TRUE
+export FLASH_ATTENTION_DISABLE_FP8=TRUE
+export FLASH_ATTENTION_DISABLE_HDIM64=TRUE
+export FLASH_ATTENTION_DISABLE_HDIM96=TRUE
+export FLASH_ATTENTION_DISABLE_HDIM128=TRUE
+export FLASH_ATTENTION_DISABLE_HDIM192=TRUE
+export FLASH_ATTENTION_DISABLE_HDIMDIFF64=TRUE
+export FLASH_ATTENTION_DISABLE_HDIMDIFF192=TRUE
+export FLASH_ATTENTION_DISABLE_SPLIT=TRUE
+export FLASH_ATTENTION_DISABLE_PAGEDKV=TRUE
+export FLASH_ATTENTION_DISABLE_APPENDKV=TRUE
+export FLASH_ATTENTION_DISABLE_LOCAL=TRUE
+export FLASH_ATTENTION_DISABLE_SOFTCAP=TRUE
+export FLASH_ATTENTION_DISABLE_PACKGQA=TRUE
+export FLASH_ATTENTION_DISABLE_VARLEN=TRUE
+export FLASH_ATTENTION_DISABLE_CLUSTER=TRUE
+python setup.py install
+```
+
+This reduced the build to four objects and installed `flash-attn-3 3.0.0`.
+Transformer Engine imports now report `FlashAttentionUtils.v3_is_installed ==
+True` and `fa3_version == 3.0.0` in `.venv_mca_fa3`. The matched 50-step smoke
+keeps the same TP2/PP4/EP2/CP1/GAS8 geometry as smoke6 but runs from the FA3
+venv:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke7_fa3_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke7_fa3_50step.sbatch
+```
+
 Open MCA memory/speed candidates after the TP2 smoke:
 
 - Implement context-parallel gated-delta attention for Qwen3.5/MCA so the 32k
