@@ -317,6 +317,19 @@ reason: shard tensor dimensions and let MCA enable sequence parallelism for
         TP+EP, without using the unsupported gated-delta context-parallel path.
 ```
 
+Open MCA memory/speed candidates after the TP2 smoke:
+
+- Implement context-parallel gated-delta attention for Qwen3.5/MCA so the 32k
+  sequence can be split across ranks without hitting the current assertion.
+  This is likely the cleanest way to make CP a valid memory-reduction path, but
+  it requires changing the Qwen3.5 gated-delta/FLA integration rather than only
+  changing YAML.
+- If TP2 still OOMs in `l2norm_bwd_kernel`, add a reproducible ADP patch to
+  constrain or pre-warm FLA's Triton l2norm backward autotuning, because smoke7
+  failed during autotune/first backward at near-full H100 memory.
+- Try a different pipeline split such as PP8/EP2 if tensor parallelism works
+  but leaves uneven late-stage memory pressure.
+
 The first two-node MCA smoke is:
 
 ```text
