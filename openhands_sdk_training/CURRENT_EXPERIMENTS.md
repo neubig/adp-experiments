@@ -649,6 +649,45 @@ For the current TP2/PP4/EP2/CP1 geometry, full-layer recompute remains
 necessary; selective recompute is not a viable immediate speedup unless memory
 is reduced by another mechanism first.
 
+The next parallelism smoke tried to reduce per-stage memory with PP8 while
+dropping TP to 1:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_pp8_ep2_smoke11_fa3_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_pp8_ep2_smoke11_fa3_50step.sbatch
+parallelism: TP=1, PP=8, EP=2, CP=1, GAS=8
+```
+
+Job `123856` (`smoke11_fa3_pp8_ep2_50step`) failed before logging loss:
+
+```text
+state: FAILED
+elapsed: 00:03:33
+exit_code: 143:0
+```
+
+This failure was different from the selective-recompute OOMs. The model body
+memory was much lower, but the final pipeline ranks OOMed in the loss path:
+
+```text
+language_module.compute_language_model_loss
+tensor_parallel.vocab_parallel_cross_entropy
+_VocabParallelCrossEntropy.forward
+NCCL WARN Cuda failure 2 'out of memory'
+```
+
+The likely cause is dropping tensor parallelism: TP1 leaves the 248k-token
+Qwen3.5 vocabulary/loss shard too large on the last stage. The corrected PP8
+follow-up keeps TP2 for vocab/logit sharding, drops expert parallelism to EP1
+to fit the 16-rank world with PP8, and raises gradient accumulation to 16 to
+keep the total train batch at 16:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp8_ep1_smoke12_fa3_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp8_ep1_smoke12_fa3_50step.sbatch
+parallelism: TP=2, PP=8, EP=1, CP=1, GAS=16
+```
+
 Open MCA memory/speed candidates after the TP2 smoke:
 
 - Implement context-parallel gated-delta attention for Qwen3.5/MCA so the 32k
