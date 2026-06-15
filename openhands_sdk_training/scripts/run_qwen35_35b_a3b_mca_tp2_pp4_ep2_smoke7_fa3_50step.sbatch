@@ -20,10 +20,10 @@ CODE_DIR=/home/gneubig/workspace/project/7511d8c2946a4a53a9b2a4f643840479/adp-ex
 VENV_DIR="${CODE_DIR}/.venv_mca_fa3"
 MCA_SITE_DIR="${VENV_DIR}/lib/python3.11/site-packages"
 RUN_DIR=/project/flame/gneubig/adp/runs/openhands_sdk_training/full_condenser_24k_all_records_v2_adapted
-CONFIG_YAML="${CODE_DIR}/configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke7_fa3_50step.yaml"
-OUTPUT_DIR="${RUN_DIR}/output_bench_qwen35_35b_a3b_mca_tp2_pp4_ep2_seq32768_smoke7_fa3_50step"
-LOG_DIR="${RUN_DIR}/logs"
-GPU_LOG="${LOG_DIR}/gpu_monitor_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke7_fa3_50step_${SLURM_JOB_ID}.log"
+CONFIG_YAML="${CONFIG_YAML:-${CODE_DIR}/configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke7_fa3_50step.yaml}"
+OUTPUT_DIR="${OUTPUT_DIR:-${RUN_DIR}/output_bench_qwen35_35b_a3b_mca_tp2_pp4_ep2_seq32768_smoke7_fa3_50step}"
+LOG_DIR="${LOG_DIR:-${RUN_DIR}/logs}"
+GPU_LOG="${GPU_LOG:-${LOG_DIR}/gpu_monitor_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke7_fa3_50step_${SLURM_JOB_ID}.log}"
 
 mkdir -p "${LOG_DIR}" "${OUTPUT_DIR}"
 cd "${CODE_DIR}"
