@@ -276,6 +276,29 @@ A local `AutoConfig.from_pretrained(...)` probe with these variables reported
 `attention_backend=AttnBackend.flash` and
 `transformer_impl=transformer_engine`. This MCA smoke is labeled `smoke7`.
 
+Smoke7 was submitted as job `123830`. It reached
+`mcore_adapter.trainer: ***** Running training *****` and got into the first
+backward pass, but failed before logging loss/W&B training metrics with:
+
+```text
+RuntimeError: Triton Error [CUDA]: out of memory
+```
+
+The traceback came from FLA's Triton autotuned `l2norm_bwd_kernel` during
+Qwen3.5 gated-delta attention backward. The GPU monitor showed local ranks 4-7
+on the second node at roughly 80GB used at failure, while the earlier steady
+state was around 40-49GB per rank. This makes the next MCA smoke a
+per-rank-activation-memory test rather than a launcher/runtime test:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_pp4_ep2_cp2_smoke.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_pp4_ep2_cp2_smoke.sbatch
+parallelism: TP=1, PP=4, EP=2, CP=2, GAS=8
+reason: use context parallelism to split the 32k sequence across two ranks and
+        keep the optimizer-step batch comparable after the data-parallel group
+        drops from 4 to 2.
+```
+
 The first two-node MCA smoke is:
 
 ```text
