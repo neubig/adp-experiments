@@ -30,6 +30,10 @@ For MCA tensor-parallel runs, it also rounds the per-step padded sequence length
 up to a multiple of the tensor-parallel world size. Megatron sequence parallel
 uses reduce-scatter along the sequence dimension, so TP>1 runs can fail on any
 gradient-accumulation group whose local max sequence length is not TP-divisible.
+
+For Qwen3.5 full-attention layers with fewer KV groups than TP ranks, it mirrors
+Megatron's query sub-slice onto the output gate. Without this, TP4+ runs keep a
+full gathered gate tensor while the attention output is already rank-local.
 """
 
 from __future__ import annotations
@@ -52,6 +56,7 @@ MCA_SKIP_FINAL_SAVE_PATCH_MARKER = "# ADP patch: optionally skip MCA benchmark f
 MCA_SKIP_FINAL_PLOT_PATCH_MARKER = "# ADP patch: skip MCA loss plotting when benchmark state is skipped."
 MCA_QWEN35_LINEAR_CONFIG_PATCH_MARKER = "# ADP patch: accept Qwen3.5 linear-attention config fields."
 MCA_TP_SEQ_LENGTH_PATCH_MARKER = "# ADP patch: round MCA step sequence length for tensor parallelism."
+MCA_QWEN35_TP_OUTPUT_GATE_PATCH_MARKER = "# ADP patch: slice Qwen3.5 output gate for KV-heads < TP."
 MCA_GDN_CP_IMPORT_PATCH_MARKER = "# ADP patch: import FLA context-parallel GDN helpers."
 MCA_GDN_CP_INIT_PATCH_MARKER = "# ADP patch: record GDN context-parallel process group."
 MCA_GDN_CP_FORWARD_PATCH_MARKER = "# ADP patch: pass FLA context-parallel metadata through GDN."
@@ -264,6 +269,28 @@ MCA_TP_SEQ_LENGTH_NEW = f"""        if len(step_inputs) < self.args.gradient_acc
 
         if not self.args.allow_variable_seq_lengths():
             step_inputs = [self._pad_batched_inputs(inputs, max_seq_length) for inputs in step_inputs]
+"""
+MCA_QWEN35_TP_OUTPUT_GATE_OLD = """        if output_gate:
+            # Gate [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
+            gate = gate.reshape(*gate.shape[:2], -1, self.hidden_size_per_attention_head)
+            return query, key, value, gate
+"""
+MCA_QWEN35_TP_OUTPUT_GATE_NEW = f"""        if output_gate:
+            # Gate [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
+            gate = gate.reshape(*gate.shape[:2], -1, self.hidden_size_per_attention_head)
+            if self.config.num_query_groups < self.world_size:
+                # Mirror the query sub-slice above when TP exceeds the number
+                # of KV groups. Without this, TP4+ Qwen3.5 attention keeps the
+                # full gathered gate while core_attn_out is rank-local.
+                idx = get_tensor_model_parallel_rank() % (
+                    self.world_size // self.config.num_query_groups
+                )
+                size = self.num_attention_heads_per_partition // (
+                    self.world_size // self.config.num_query_groups
+                )
+                gate = gate[:, :, idx * size : (idx + 1) * size, :]
+                {MCA_QWEN35_TP_OUTPUT_GATE_PATCH_MARKER}
+            return query, key, value, gate
 """
 MCA_GDN_CP_IMPORT_OLD = """try:
     from fla.modules.l2norm import l2norm
@@ -540,6 +567,14 @@ def main() -> int:
             MCA_TP_SEQ_LENGTH_NEW,
             MCA_TP_SEQ_LENGTH_PATCH_MARKER,
             "MCA tensor-parallel sequence-length padding",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.transformer.attention",
+            MCA_QWEN35_TP_OUTPUT_GATE_OLD,
+            MCA_QWEN35_TP_OUTPUT_GATE_NEW,
+            MCA_QWEN35_TP_OUTPUT_GATE_PATCH_MARKER,
+            "MCA Qwen3.5 TP output-gate slicing",
             missing_ok=True,
         ),
         patch_file(

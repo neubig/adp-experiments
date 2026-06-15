@@ -843,6 +843,32 @@ TP4/PP2 is therefore not a drop-in improvement today. The failure is a shape
 mismatch in the MCA/Megatron Qwen3.5 output-gate path, not a Slurm or memory
 issue.
 
+The follow-up TP4/PP2 retry added an ADP patch to mirror Megatron's query
+sub-slice onto the full-attention output gate when
+`num_query_groups < tensor_model_parallel_size`:
+
+```text
+job: 123875
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp4_pp2_ep2_sp_smoke20_gatefix_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp4_pp2_ep2_sp_smoke20_gatefix_fa3_12step.sbatch
+parallelism: TP=4, PP=2, EP=2, CP=1, SP=true, GAS=8
+result: COMPLETED
+train_runtime: 608.1s for 12 optimizer steps
+train_samples_per_second: 0.316
+train_steps_per_second: 0.020
+train_loss: 0.709
+steady logged token/sec/GPU after steps 5-12: about 10.7k mean
+peak sampled memory MiB by local GPU: 68171, 68087, 67885, 67667,
+  67881, 67743, 67801, 67545
+```
+
+The patch fixes the TP4 correctness blocker, but TP4/PP2 is much slower than
+the TP2/PP4/SP best run: about 50.7 seconds/optimizer step for this smoke
+versus about 21.6 seconds/optimizer step for job `123865`. The likely tradeoff
+is that TP4 lowers memory and pipeline depth, but the extra TP collectives and
+smaller per-rank GEMMs dominate for this model and sequence length. Keep the
+gate patch for correctness, but do not use TP4/PP2 as the speed recipe.
+
 An experimental ADP patch now wires FLA's context-parallel causal convolution
 and `chunk_gated_delta_rule(..., cp_context=...)` into Megatron-Core's
 `GatedDeltaNet`, and relaxes Megatron-Core's configuration assertion for
@@ -891,7 +917,9 @@ Open MCA memory/speed candidates after the TP2 smoke:
 - If TP2 still OOMs in `l2norm_bwd_kernel`, add a reproducible ADP patch to
   constrain or pre-warm FLA's Triton l2norm backward autotuning, because job
   `123830` failed during autotune/first backward at near-full H100 memory.
-- Fix the TP4 Qwen3.5 output-gate shape mismatch before retrying TP4/PP2.
+- The TP4 Qwen3.5 output-gate shape mismatch is fixed by the ADP patch helper,
+  but the validated TP4/PP2 retry is slower than TP2/PP4. Do not use TP4/PP2
+  for speed without a new reason to believe TP overhead has been reduced.
 - Larger GAS improves late logged token/sec/GPU, but changes the optimizer-step
   batch. Use it only together with deliberate learning-rate/batch-size tuning.
 
