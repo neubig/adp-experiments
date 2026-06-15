@@ -228,13 +228,42 @@ linear-attention and Qwen3.5-MoE template fields that the adapter itself maps:
 probe succeeded and reported `num_moe_experts=256`, `moe_router_topk=8`, and
 `experimental_attention_variant=gated_delta_net`.
 
+The next MCA attempts surfaced two more compatibility constraints:
+
+```text
+job 123822: got past Qwen3.5 config conversion but failed because
+           apply_rope_fusion requires Transformer Engine >= 1.4 or Apex.
+           The smoke config now sets apply_rope_fusion: false.
+job 123823: got past rope fusion but failed because megatron-core==0.13.1
+           does not include
+           megatron.core.models.gpt.experimental_attention_variant_module_specs,
+           which ROLL's Qwen3.5 adapter imports for gated-delta attention.
+```
+
+Upgrading only the isolated MCA venv to `megatron-core==0.16.1` fixed the
+missing experimental-attention module in a local import/config probe:
+
+```text
+AutoConfig.from_pretrained(...Qwen3.5-35B-A3B) -> Qwen3_5Config
+transformer_impl: transformer_engine
+experimental_attention_variant: gated_delta_net
+```
+
 The current patched MCA smoke is queued as:
 
 ```text
-job: 123822
-run: adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke3
+job: 123824
+run: adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke5
 parallelism: TP=1, PP=4, EP=4, CP=1, GAS=4
+config changes since smoke3: megatron-core==0.16.1, transformer_impl=transformer_engine,
+                            apply_rope_fusion=false
 ```
+
+This path may still require a matching Transformer Engine runtime even though
+the import probe passes: ROLL's Qwen3.5 model asserts
+`transformer_impl == "transformer_engine"` when the gated-delta attention
+variant is present, and the Megatron experimental-attention helper documents
+only the Transformer Engine backend for this path.
 
 For the next full run, use the best stable hpZ8 DeepSpeed recipe and switch only
 the scheduler to WSD:

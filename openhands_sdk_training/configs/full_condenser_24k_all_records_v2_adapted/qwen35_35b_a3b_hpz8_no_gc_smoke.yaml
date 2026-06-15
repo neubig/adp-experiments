@@ -1,12 +1,14 @@
 ### model
 model_name_or_path: /project/flame/gneubig/adp/models/Qwen3.5-35B-A3B
 trust_remote_code: true
+enable_liger_kernel: true
 flash_attn: fa2
 
 ### method
 stage: sft
 do_train: true
 finetuning_type: full
+deepspeed: /project/flame/gneubig/adp/runs/openhands_sdk_training/full_condenser_24k_all_records_v2_adapted/ds_z3_config_qwen35_hpz8.json
 
 ### dataset
 dataset: full_condenser_24k_all_records_v2_train_adp_refactor
@@ -20,48 +22,29 @@ data_shared_file_system: true
 tokenized_path: /project/flame/gneubig/adp/runs/openhands_sdk_training/full_condenser_24k_all_records_v2_adapted/tokenized_qwen35_9b_seq32768_all_records_v2_adp_refactor_sharedfs_singleproc_flashattn
 
 ### output
-output_dir: /project/flame/gneubig/adp/runs/openhands_sdk_training/full_condenser_24k_all_records_v2_adapted/output_bench_qwen35_35b_a3b_mca_pp4_ep4_seq32768_smoke5
+output_dir: /project/flame/gneubig/adp/runs/openhands_sdk_training/full_condenser_24k_all_records_v2_adapted/output_bench_qwen35_35b_a3b_hpz8_no_gc_seq32768_smoke
 logging_steps: 1
 save_strategy: "no"
-save_steps: 100000
 plot_loss: false
-save_only_model: false
+overwrite_output_dir: true
+save_only_model: true
 report_to: wandb
-run_name: adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke5
+run_name: adp-bench-qwen35-35b-a3b-hpz8-no-gc-seq32768-smoke
 
 ### train
 per_device_train_batch_size: 1
-gradient_accumulation_steps: 4
+gradient_accumulation_steps: 8
 learning_rate: 1.0e-5
 max_steps: 12
-lr_scheduler_type: warmup_stable_decay
+lr_scheduler_type: cosine
 warmup_ratio: 0.03
 bf16: true
 fp16: false
+gradient_checkpointing: false
 ddp_timeout: 180000000
 resume_from_checkpoint: null
 
 ### eval
+per_device_eval_batch_size: 1
 eval_strategy: "no"
-
-### Megatron Core Adapter
-tensor_model_parallel_size: 1
-pipeline_model_parallel_size: 4
-expert_model_parallel_size: 4
-context_parallel_size: 1
-sequence_parallel: false
-virtual_pipeline_model_parallel_size: null
-overlap_p2p_comm: true
-use_distributed_optimizer: true
-overlap_grad_reduce: true
-overlap_param_gather: true
-moe_token_dispatcher_type: alltoall
-moe_grouped_gemm: true
-moe_shared_expert_overlap: true
-moe_aux_loss_coeff: 0.0
-recompute_granularity: full
-recompute_method: uniform
-recompute_num_layers: 1
-transformer_impl: transformer_engine
-bias_activation_fusion: true
-apply_rope_fusion: false
+prediction_loss_only: true
