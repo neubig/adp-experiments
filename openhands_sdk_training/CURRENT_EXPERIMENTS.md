@@ -299,6 +299,24 @@ reason: use context parallelism to split the 32k sequence across two ranks and
         drops from 4 to 2.
 ```
 
+Job `123831` failed during model construction before training:
+
+```text
+AssertionError: Gated delta net does not support context parallel for now, but got self.context_parallel_size=2.
+```
+
+For Qwen3.5 gated-delta MCA, `context_parallel_size > 1` is therefore not a
+usable memory-reduction knob yet. The next smoke keeps CP disabled and tries
+tensor parallelism instead:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke.sbatch
+parallelism: TP=2, PP=4, EP=2, CP=1, GAS=8
+reason: shard tensor dimensions and let MCA enable sequence parallelism for
+        TP+EP, without using the unsupported gated-delta context-parallel path.
+```
+
 The first two-node MCA smoke is:
 
 ```text
