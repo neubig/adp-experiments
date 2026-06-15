@@ -981,24 +981,91 @@ peak sampled memory MiB by local GPU: 80453, 80229, 80387, 80507,
   79931, 80111, 80847, 80809
 ```
 
-This establishes a correctness-oriented CP path for Qwen3.5 GDN on the current
-pipeline, but it is not the final long-context scaling solution. The bridge uses
-two full CP all-gathers per GDN layer, so it largely gives up the memory-scaling
-benefit that CP should provide. The kernel-level path for larger contexts is a
-true virtual-chunk FLA CP implementation: treat Megatron's `2 * CP` head-tail
-chunks as virtual CP ranks, exchange only compact conv tails and gated-delta
-state-transition summaries, and compute each physical rank's two chunks without
-materializing a dense full-sequence tensor.
+The follow-up smoke replaced the full all-gather bridge with an all-to-all
+virtual-chunk exchange. This still redistributes full q/k/v/gate streams before
+calling FLA, but each rank receives only the two virtual chunks that make up its
+contiguous FLA interval instead of materializing the entire global sequence:
+
+```text
+job: 123879
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke24_vchunk_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke24_vchunk_fa3_12step.sbatch
+parallelism: TP=2, PP=2, EP=2, CP=2, SP=true, GAS=8
+result: training completed and logged to wandb; Slurm batch was marked FAILED
+        because the launcher file was edited while the shell was still reading
+        its final status lines
+train_runtime: 790.1s for 12 optimizer steps
+train_samples_per_second: 0.243
+train_steps_per_second: 0.015
+train_loss: 0.7082
+post-burn-in token/sec/GPU: mostly 7.9k-10.4k
+peak sampled memory MiB by local GPU: 79815, 80089, 81051, 80731,
+  79431, 79511, 80931, 80813
+```
+
+The native compact-state path is implemented behind
+`ADP_MCA_GDN_CP_NATIVE_VCHUNK=1` in
+`scripts/patch_fla_gdn_native_virtual_cp.py`. It keeps Megatron's head-tail
+layout in place and teaches FLA's compact CP exchanges about virtual chunks:
+the causal convolution exchanges only `W - 1` predecessor tokens per virtual
+chunk, and the gated-delta forward/backward exchange only compact recurrent
+state-transition summaries. This avoids full q/k/v stream redistribution.
+The first native smoke completed and had loss consistent with smoke24, but it
+was slower because the implementation launched the FLA summary kernels once per
+local virtual chunk:
+
+```text
+job: 123880
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke25_native_vchunk_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke25_native_vchunk_fa3_12step.sbatch
+parallelism: TP=2, PP=2, EP=2, CP=2, SP=true, GAS=8
+result: COMPLETED
+train_runtime: 974.6s for 12 optimizer steps
+train_samples_per_second: 0.197
+train_steps_per_second: 0.012
+train_loss: 0.7096
+post-burn-in token/sec/GPU: mostly 6.2k-6.7k
+peak sampled memory MiB by local GPU: 80883, 80955, 80959, 80781,
+  80893, 80875, 80993, 80619
+interpretation: correctness smoke passed, but compact native CP is not yet a
+  speed win; the saved tensor redistribution is outweighed by extra per-chunk
+  FLA summary launch/autotune overhead.
+```
+
+A follow-up native smoke fuses the two local virtual chunks into one FLA
+multi-sequence summary launch where possible. Forward uses FLA's existing
+`MULTI_SEQS` path; backward extends the merged backward summary kernel with the
+same sequence-grid dimension and writes one compact summary per local virtual
+chunk:
+
+```text
+job: 123884
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke26_native_vchunk_multiseq_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke26_native_vchunk_multiseq_fa3_12step.sbatch
+parallelism: TP=2, PP=2, EP=2, CP=2, SP=true, GAS=8
+result: COMPLETED
+train_runtime: 962.2s for 12 optimizer steps
+train_samples_per_second: 0.200
+train_steps_per_second: 0.012
+train_loss: 0.7073
+post-burn-in token/sec/GPU: mostly 6.3k-6.8k
+peak sampled memory MiB by local GPU: 80931, 80687, 80777, 81073,
+  80911, 80989, 80931, 80915
+interpretation: fusing the two local virtual chunks into one summary launch
+  slightly improved smoke25 but remained much slower than smoke24. For the
+  current 32k setup, the all-to-all full-stream virtual-chunk bridge is the
+  fastest validated CP option. Native compact-state CP remains useful as a
+  correctness base for longer contexts, but needs deeper FLA kernel work before
+  it is a speed win.
+```
 
 Open MCA memory/speed candidates after the TP2 smoke:
 
-- Finish performance-quality context-parallel gated-delta attention for
-  Qwen3.5/MCA. The ADP patch now has a correctness-oriented bridge that reaches
-  12 optimizer steps, but the remaining blocker for larger contexts is avoiding
-  the full CP all-gathers by implementing a virtual head-tail FLA CP context.
-  The closest upstream templates are Megatron's
-  `megatron/core/ssm/mamba_context_parallel.py`, FLA's
-  `fla.ops.cp.context`, and PyTorch's head-tail CP load balancer.
+- For immediate 32k MCA training, prefer smoke24's all-to-all virtual-chunk
+  bridge. For longer contexts, continue from the native virtual-chunk path but
+  expect to work on FLA compact-state merge kernels, tiny per-layer all-gathers,
+  and/or CP kernel launch/autotune overhead; simply avoiding q/k/v
+  redistribution was not enough to improve speed at 32k.
 - If TP2 still OOMs in `l2norm_bwd_kernel`, add a reproducible ADP patch to
   constrain or pre-warm FLA's Triton l2norm backward autotuning, because job
   `123830` failed during autotune/first backward at near-full H100 memory.

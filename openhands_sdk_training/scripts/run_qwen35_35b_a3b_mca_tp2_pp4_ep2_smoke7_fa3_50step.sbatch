@@ -35,6 +35,9 @@ export NVTE_FLASH_ATTN=1
 export NVTE_FUSED_ATTN=0
 export NVTE_UNFUSED_ATTN=0
 "${MCA_PYTHON}" "${CODE_DIR}/scripts/patch_llamafactory_liger_eval_skip_logits.py"
+if [[ -n "${ADP_EXTRA_PATCH_SCRIPT:-}" ]]; then
+  "${MCA_PYTHON}" "${ADP_EXTRA_PATCH_SCRIPT}"
+fi
 
 export HF_HOME=${HF_HOME:-/project/flame/gneubig/adp/cache/hf}
 export HF_DATASETS_CACHE=${HF_DATASETS_CACHE:-${HF_HOME}/datasets}

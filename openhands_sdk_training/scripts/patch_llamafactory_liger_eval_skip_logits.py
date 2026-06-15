@@ -74,6 +74,9 @@ MCA_GDN_CP_LAYOUT_HELPERS_PATCH_MARKER = "# ADP patch: load-balanced CP layout b
 MCA_GDN_CP_UNDO_LAYOUT_PATCH_MARKER = "# ADP patch: convert load-balanced CP layout to contiguous GDN chunks."
 MCA_GDN_CP_REDO_LAYOUT_PATCH_MARKER = "# ADP patch: restore load-balanced CP layout after GDN."
 MCA_GDN_CP_DETERMINISTIC_GUARD_PATCH_MARKER = "# ADP patch: disallow deterministic fallback for GDN CP."
+MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_PATCH_MARKER = "# ADP patch: exchange CP virtual chunks without full all-gather."
+MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_PATCH_MARKER = "# ADP patch: exchange head-tail CP chunks into contiguous GDN layout."
+MCA_GDN_CP_CHUNK_EXCHANGE_REDO_PATCH_MARKER = "# ADP patch: exchange contiguous GDN chunks back to head-tail CP layout."
 OLD = """        loss, generated_tokens, _ = super().prediction_step(
             model, inputs, prediction_loss_only=prediction_loss_only, ignore_keys=ignore_keys, **gen_kwargs
         )
@@ -632,6 +635,166 @@ def _adp_cp_redo_load_balancing(
     return full_tensor.index_select(dim, restore_indices).contiguous()
 
 
+class _ADPCPChunkExchange(torch.autograd.Function):
+    \"\"\"Autograd-safe CP chunk all-to-all for Megatron head-tail layout.\"\"\"
+
+    @staticmethod
+    def forward(
+        ctx,
+        tensor: torch.Tensor,
+        group: dist.ProcessGroup,
+        dim: int,
+        to_contiguous: bool,
+    ):
+        ctx.group = group
+        ctx.dim = dim
+        ctx.to_contiguous = to_contiguous
+        return _adp_cp_exchange_virtual_chunks(
+            tensor, group, dim=dim, to_contiguous=to_contiguous
+        )
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        grad_input = _adp_cp_exchange_virtual_chunks(
+            grad_output.contiguous(),
+            ctx.group,
+            dim=ctx.dim,
+            to_contiguous=not ctx.to_contiguous,
+        )
+        return grad_input, None, None, None
+
+
+def _adp_cp_exchange_virtual_chunks(
+    tensor: torch.Tensor,
+    group: dist.ProcessGroup,
+    *,
+    dim: int,
+    to_contiguous: bool,
+) -> torch.Tensor:
+    cp_size = dist.get_world_size(group)
+    if cp_size <= 1 or _adp_env_flag("ADP_MCA_CONTIGUOUS_CP"):
+        return tensor.contiguous()
+
+    cp_rank = dist.get_rank(group)
+    dim = dim if dim >= 0 else tensor.ndim + dim
+    x = tensor.movedim(dim, 0).contiguous()
+    local_seq_len = x.shape[0]
+    if local_seq_len % 2 != 0:
+        raise RuntimeError(
+            "Megatron head-tail CP chunk exchange requires an even local sequence "
+            f"length, got {{local_seq_len}}."
+        )
+
+    chunk_len = local_seq_len // 2
+    local_chunks = [x.narrow(0, 0, chunk_len), x.narrow(0, chunk_len, chunk_len)]
+
+    def owner_rank(virtual_chunk: int) -> int:
+        if virtual_chunk < cp_size:
+            return virtual_chunk
+        return 2 * cp_size - virtual_chunk - 1
+
+    def contiguous_rank(virtual_chunk: int) -> int:
+        return virtual_chunk // 2
+
+    if to_contiguous:
+        local_virtual_chunks = [cp_rank, 2 * cp_size - cp_rank - 1]
+        target_virtual_chunks = [2 * cp_rank, 2 * cp_rank + 1]
+        destination_rank = contiguous_rank
+    else:
+        local_virtual_chunks = [2 * cp_rank, 2 * cp_rank + 1]
+        target_virtual_chunks = [cp_rank, 2 * cp_size - cp_rank - 1]
+        destination_rank = owner_rank
+
+    send_parts = []
+    input_split_sizes: list[int] = []
+    for destination in range(cp_size):
+        matching_indices = [
+            idx
+            for idx, virtual_chunk in enumerate(local_virtual_chunks)
+            if destination_rank(virtual_chunk) == destination
+        ]
+        if len(matching_indices) > 1:
+            raise RuntimeError(
+                "Unexpected CP virtual-chunk routing: more than one local chunk "
+                f"targets rank {{destination}}."
+            )
+        if matching_indices:
+            send_parts.append(local_chunks[matching_indices[0]])
+            input_split_sizes.append(chunk_len)
+        else:
+            input_split_sizes.append(0)
+
+    if send_parts:
+        send_tensor = torch.cat(send_parts, dim=0).contiguous()
+    else:
+        send_tensor = x.new_empty((0, *x.shape[1:]))
+
+    output_split_sizes: list[int] = []
+    incoming_virtual_chunks: list[int | None] = []
+    for source in range(cp_size):
+        source_virtual_chunks = (
+            [source, 2 * cp_size - source - 1]
+            if to_contiguous
+            else [2 * source, 2 * source + 1]
+        )
+        incoming = [
+            virtual_chunk
+            for virtual_chunk in source_virtual_chunks
+            if destination_rank(virtual_chunk) == cp_rank
+        ]
+        if len(incoming) > 1:
+            raise RuntimeError(
+                "Unexpected CP virtual-chunk routing: more than one chunk from "
+                f"rank {{source}} targets rank {{cp_rank}}."
+            )
+        if incoming:
+            output_split_sizes.append(chunk_len)
+            incoming_virtual_chunks.append(incoming[0])
+        else:
+            output_split_sizes.append(0)
+            incoming_virtual_chunks.append(None)
+
+    recv_tensor = x.new_empty((sum(output_split_sizes), *x.shape[1:]))
+    dist.all_to_all_single(
+        recv_tensor,
+        send_tensor,
+        output_split_sizes=output_split_sizes,
+        input_split_sizes=input_split_sizes,
+        group=group,
+    )
+
+    chunks_by_virtual: dict[int, torch.Tensor] = {{}}
+    offset = 0
+    for size, virtual_chunk in zip(output_split_sizes, incoming_virtual_chunks):
+        if size:
+            chunks_by_virtual[virtual_chunk] = recv_tensor.narrow(0, offset, size)
+            offset += size
+
+    try:
+        ordered = torch.cat([chunks_by_virtual[chunk] for chunk in target_virtual_chunks], dim=0)
+    except KeyError as exc:
+        raise RuntimeError(
+            f"Missing CP virtual chunk {{exc.args[0]}} after all-to-all exchange."
+        ) from exc
+
+    return ordered.movedim(0, dim).contiguous()
+
+
+def _adp_cp_head_tail_to_contiguous(
+    tensor: torch.Tensor, group: dist.ProcessGroup, *, dim: int
+) -> torch.Tensor:
+    return _ADPCPChunkExchange.apply(tensor, group, dim, True)
+
+
+def _adp_cp_contiguous_to_head_tail(
+    tensor: torch.Tensor, group: dist.ProcessGroup, *, dim: int
+) -> torch.Tensor:
+    return _ADPCPChunkExchange.apply(tensor, group, dim, False)
+
+
+{MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_PATCH_MARKER}
+
+
 {MCA_GDN_CP_LAYOUT_HELPERS_PATCH_MARKER}
 
 
@@ -650,16 +813,21 @@ MCA_GDN_CP_UNDO_LAYOUT_NEW = f"""        # Transpose: s b x --> b s x
 
         original_cp_positions = None
         sorted_cp_positions = None
+        use_full_gather_cp_bridge = _adp_env_flag("ADP_MCA_GDN_CP_FULL_GATHER_BRIDGE")
         if cp_context is not None:
             if qkvzba.shape[1] != seq_len:
                 raise RuntimeError(
                     "Unexpected GDN sequence shape after input projection: "
                     f"got {{qkvzba.shape[1]}}, expected {{seq_len}}."
                 )
-            original_cp_positions = _adp_cp_local_positions(seq_len, self.cp_group, qkvzba.device)
-            qkvzba, sorted_cp_positions = _adp_cp_undo_load_balancing(
-                qkvzba, original_cp_positions, self.cp_group, dim=1
-            )
+            if use_full_gather_cp_bridge:
+                original_cp_positions = _adp_cp_local_positions(seq_len, self.cp_group, qkvzba.device)
+                qkvzba, sorted_cp_positions = _adp_cp_undo_load_balancing(
+                    qkvzba, original_cp_positions, self.cp_group, dim=1
+                )
+            else:
+                qkvzba = _adp_cp_head_tail_to_contiguous(qkvzba, self.cp_group, dim=1)
+                {MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_PATCH_MARKER}
             {MCA_GDN_CP_UNDO_LAYOUT_PATCH_MARKER}
 
         # Split, reorder, and reshape the tensor into q, k, v, gate, beta, alpha
@@ -669,9 +837,13 @@ MCA_GDN_CP_REDO_LAYOUT_OLD = """        norm_out = norm_out.reshape(batch, seq_l
 """
 MCA_GDN_CP_REDO_LAYOUT_NEW = f"""        norm_out = norm_out.reshape(batch, seq_len, -1)
         if cp_context is not None:
-            norm_out = _adp_cp_redo_load_balancing(
-                norm_out, original_cp_positions, sorted_cp_positions, self.cp_group, dim=1
-            )
+            if use_full_gather_cp_bridge:
+                norm_out = _adp_cp_redo_load_balancing(
+                    norm_out, original_cp_positions, sorted_cp_positions, self.cp_group, dim=1
+                )
+            else:
+                norm_out = _adp_cp_contiguous_to_head_tail(norm_out, self.cp_group, dim=1)
+                {MCA_GDN_CP_CHUNK_EXCHANGE_REDO_PATCH_MARKER}
             {MCA_GDN_CP_REDO_LAYOUT_PATCH_MARKER}
         norm_out = norm_out.transpose(0, 1).contiguous()
 """
@@ -693,6 +865,221 @@ MCA_GDN_CP_DETERMINISTIC_GUARD_NEW = f"""        if packed_seq_params is not Non
             )
 
         # Input projection
+"""
+MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_OLD = MCA_GDN_CP_LAYOUT_HELPERS_PATCH_MARKER
+MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_NEW = f"""class _ADPCPChunkExchange(torch.autograd.Function):
+    \"\"\"Autograd-safe CP chunk all-to-all for Megatron head-tail layout.\"\"\"
+
+    @staticmethod
+    def forward(
+        ctx,
+        tensor: torch.Tensor,
+        group: dist.ProcessGroup,
+        dim: int,
+        to_contiguous: bool,
+    ):
+        ctx.group = group
+        ctx.dim = dim
+        ctx.to_contiguous = to_contiguous
+        return _adp_cp_exchange_virtual_chunks(
+            tensor, group, dim=dim, to_contiguous=to_contiguous
+        )
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        grad_input = _adp_cp_exchange_virtual_chunks(
+            grad_output.contiguous(),
+            ctx.group,
+            dim=ctx.dim,
+            to_contiguous=not ctx.to_contiguous,
+        )
+        return grad_input, None, None, None
+
+
+def _adp_cp_exchange_virtual_chunks(
+    tensor: torch.Tensor,
+    group: dist.ProcessGroup,
+    *,
+    dim: int,
+    to_contiguous: bool,
+) -> torch.Tensor:
+    cp_size = dist.get_world_size(group)
+    if cp_size <= 1 or _adp_env_flag("ADP_MCA_CONTIGUOUS_CP"):
+        return tensor.contiguous()
+
+    cp_rank = dist.get_rank(group)
+    dim = dim if dim >= 0 else tensor.ndim + dim
+    x = tensor.movedim(dim, 0).contiguous()
+    local_seq_len = x.shape[0]
+    if local_seq_len % 2 != 0:
+        raise RuntimeError(
+            "Megatron head-tail CP chunk exchange requires an even local sequence "
+            f"length, got {{local_seq_len}}."
+        )
+
+    chunk_len = local_seq_len // 2
+    local_chunks = [x.narrow(0, 0, chunk_len), x.narrow(0, chunk_len, chunk_len)]
+
+    def owner_rank(virtual_chunk: int) -> int:
+        if virtual_chunk < cp_size:
+            return virtual_chunk
+        return 2 * cp_size - virtual_chunk - 1
+
+    def contiguous_rank(virtual_chunk: int) -> int:
+        return virtual_chunk // 2
+
+    if to_contiguous:
+        local_virtual_chunks = [cp_rank, 2 * cp_size - cp_rank - 1]
+        target_virtual_chunks = [2 * cp_rank, 2 * cp_rank + 1]
+        destination_rank = contiguous_rank
+    else:
+        local_virtual_chunks = [2 * cp_rank, 2 * cp_rank + 1]
+        target_virtual_chunks = [cp_rank, 2 * cp_size - cp_rank - 1]
+        destination_rank = owner_rank
+
+    send_parts = []
+    input_split_sizes: list[int] = []
+    for destination in range(cp_size):
+        matching_indices = [
+            idx
+            for idx, virtual_chunk in enumerate(local_virtual_chunks)
+            if destination_rank(virtual_chunk) == destination
+        ]
+        if len(matching_indices) > 1:
+            raise RuntimeError(
+                "Unexpected CP virtual-chunk routing: more than one local chunk "
+                f"targets rank {{destination}}."
+            )
+        if matching_indices:
+            send_parts.append(local_chunks[matching_indices[0]])
+            input_split_sizes.append(chunk_len)
+        else:
+            input_split_sizes.append(0)
+
+    if send_parts:
+        send_tensor = torch.cat(send_parts, dim=0).contiguous()
+    else:
+        send_tensor = x.new_empty((0, *x.shape[1:]))
+
+    output_split_sizes: list[int] = []
+    incoming_virtual_chunks: list[int | None] = []
+    for source in range(cp_size):
+        source_virtual_chunks = (
+            [source, 2 * cp_size - source - 1]
+            if to_contiguous
+            else [2 * source, 2 * source + 1]
+        )
+        incoming = [
+            virtual_chunk
+            for virtual_chunk in source_virtual_chunks
+            if destination_rank(virtual_chunk) == cp_rank
+        ]
+        if len(incoming) > 1:
+            raise RuntimeError(
+                "Unexpected CP virtual-chunk routing: more than one chunk from "
+                f"rank {{source}} targets rank {{cp_rank}}."
+            )
+        if incoming:
+            output_split_sizes.append(chunk_len)
+            incoming_virtual_chunks.append(incoming[0])
+        else:
+            output_split_sizes.append(0)
+            incoming_virtual_chunks.append(None)
+
+    recv_tensor = x.new_empty((sum(output_split_sizes), *x.shape[1:]))
+    dist.all_to_all_single(
+        recv_tensor,
+        send_tensor,
+        output_split_sizes=output_split_sizes,
+        input_split_sizes=input_split_sizes,
+        group=group,
+    )
+
+    chunks_by_virtual: dict[int, torch.Tensor] = {{}}
+    offset = 0
+    for size, virtual_chunk in zip(output_split_sizes, incoming_virtual_chunks):
+        if size:
+            chunks_by_virtual[virtual_chunk] = recv_tensor.narrow(0, offset, size)
+            offset += size
+
+    try:
+        ordered = torch.cat([chunks_by_virtual[chunk] for chunk in target_virtual_chunks], dim=0)
+    except KeyError as exc:
+        raise RuntimeError(
+            f"Missing CP virtual chunk {{exc.args[0]}} after all-to-all exchange."
+        ) from exc
+
+    return ordered.movedim(0, dim).contiguous()
+
+
+def _adp_cp_head_tail_to_contiguous(
+    tensor: torch.Tensor, group: dist.ProcessGroup, *, dim: int
+) -> torch.Tensor:
+    return _ADPCPChunkExchange.apply(tensor, group, dim, True)
+
+
+def _adp_cp_contiguous_to_head_tail(
+    tensor: torch.Tensor, group: dist.ProcessGroup, *, dim: int
+) -> torch.Tensor:
+    return _ADPCPChunkExchange.apply(tensor, group, dim, False)
+
+
+{MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_PATCH_MARKER}
+
+
+{MCA_GDN_CP_LAYOUT_HELPERS_PATCH_MARKER}"""
+MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_OLD = f"""        original_cp_positions = None
+        sorted_cp_positions = None
+        if cp_context is not None:
+            if qkvzba.shape[1] != seq_len:
+                raise RuntimeError(
+                    "Unexpected GDN sequence shape after input projection: "
+                    f"got {{qkvzba.shape[1]}}, expected {{seq_len}}."
+                )
+            original_cp_positions = _adp_cp_local_positions(seq_len, self.cp_group, qkvzba.device)
+            qkvzba, sorted_cp_positions = _adp_cp_undo_load_balancing(
+                qkvzba, original_cp_positions, self.cp_group, dim=1
+            )
+            {MCA_GDN_CP_UNDO_LAYOUT_PATCH_MARKER}
+"""
+MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_NEW = f"""        original_cp_positions = None
+        sorted_cp_positions = None
+        use_full_gather_cp_bridge = _adp_env_flag("ADP_MCA_GDN_CP_FULL_GATHER_BRIDGE")
+        if cp_context is not None:
+            if qkvzba.shape[1] != seq_len:
+                raise RuntimeError(
+                    "Unexpected GDN sequence shape after input projection: "
+                    f"got {{qkvzba.shape[1]}}, expected {{seq_len}}."
+                )
+            if use_full_gather_cp_bridge:
+                original_cp_positions = _adp_cp_local_positions(seq_len, self.cp_group, qkvzba.device)
+                qkvzba, sorted_cp_positions = _adp_cp_undo_load_balancing(
+                    qkvzba, original_cp_positions, self.cp_group, dim=1
+                )
+            else:
+                qkvzba = _adp_cp_head_tail_to_contiguous(qkvzba, self.cp_group, dim=1)
+                {MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_PATCH_MARKER}
+            {MCA_GDN_CP_UNDO_LAYOUT_PATCH_MARKER}
+"""
+MCA_GDN_CP_CHUNK_EXCHANGE_REDO_OLD = f"""        norm_out = norm_out.reshape(batch, seq_len, -1)
+        if cp_context is not None:
+            norm_out = _adp_cp_redo_load_balancing(
+                norm_out, original_cp_positions, sorted_cp_positions, self.cp_group, dim=1
+            )
+            {MCA_GDN_CP_REDO_LAYOUT_PATCH_MARKER}
+        norm_out = norm_out.transpose(0, 1).contiguous()
+"""
+MCA_GDN_CP_CHUNK_EXCHANGE_REDO_NEW = f"""        norm_out = norm_out.reshape(batch, seq_len, -1)
+        if cp_context is not None:
+            if use_full_gather_cp_bridge:
+                norm_out = _adp_cp_redo_load_balancing(
+                    norm_out, original_cp_positions, sorted_cp_positions, self.cp_group, dim=1
+                )
+            else:
+                norm_out = _adp_cp_contiguous_to_head_tail(norm_out, self.cp_group, dim=1)
+                {MCA_GDN_CP_CHUNK_EXCHANGE_REDO_PATCH_MARKER}
+            {MCA_GDN_CP_REDO_LAYOUT_PATCH_MARKER}
+        norm_out = norm_out.transpose(0, 1).contiguous()
 """
 
 
@@ -905,6 +1292,14 @@ def main() -> int:
         ),
         patch_file(
             "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_OLD,
+            MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_NEW,
+            MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_PATCH_MARKER,
+            "MCA GDN CP virtual-chunk exchange helpers",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
             MCA_GDN_CP_INIT_OLD,
             MCA_GDN_CP_INIT_NEW,
             MCA_GDN_CP_INIT_PATCH_MARKER,
@@ -926,6 +1321,15 @@ def main() -> int:
             MCA_GDN_CP_UNDO_LAYOUT_PATCH_MARKER,
             "MCA GDN CP load-balanced to contiguous layout bridge",
             missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_OLD,
+            MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_NEW,
+            MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_PATCH_MARKER,
+            "MCA GDN CP virtual-chunk to contiguous exchange",
+            missing_ok=True,
+            old_missing_ok=True,
         ),
         patch_file(
             "megatron.core.ssm.gated_delta_net",
@@ -958,6 +1362,15 @@ def main() -> int:
             MCA_GDN_CP_REDO_LAYOUT_PATCH_MARKER,
             "MCA GDN CP contiguous to load-balanced layout bridge",
             missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_CHUNK_EXCHANGE_REDO_OLD,
+            MCA_GDN_CP_CHUNK_EXCHANGE_REDO_NEW,
+            MCA_GDN_CP_CHUNK_EXCHANGE_REDO_PATCH_MARKER,
+            "MCA GDN CP contiguous to virtual-chunk exchange",
+            missing_ok=True,
+            old_missing_ok=True,
         ),
         patch_file(
             "megatron.core.transformer.transformer_config",
