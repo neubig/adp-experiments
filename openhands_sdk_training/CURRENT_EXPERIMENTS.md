@@ -18,6 +18,171 @@ llamafactory eval: full_condenser_24k_all_records_eval.llamafactory.jsonl
 tokenized 4B path: tokenized_qwen35_4b_seq32768_all_records
 ```
 
+### LLaMA-Factory normalization requirement
+
+For OpenHands SDK SFT records, do not point LLaMA-Factory at the canonical
+OpenAI JSONL directly and do not hand-normalize fields in an experiment-local
+script. Regenerate LLaMA-Factory train/eval files with the ADP adapter:
+
+```bash
+python -m agents.openhands_sdk.sft_to_llamafactory \
+  --input INPUT.openai.jsonl \
+  --output OUTPUT.llamafactory.jsonl \
+  --dataset-info dataset_info.json \
+  --dataset-name DATASET_NAME \
+  --trim-to-trainable \
+  --skip-untrainable
+```
+
+This adapter converts tool calls into LLaMA-Factory `function_call` messages,
+merges adjacent prompt-side messages, trims to trainable prefixes, and
+stringifies the top-level `tools` field. The `tools` stringification is required
+before LLaMA-Factory invokes Hugging Face `datasets.load_dataset`; otherwise
+heterogeneous nested tool schemas can be inferred as incompatible Arrow structs
+and fail before LLaMA-Factory's own converter runs.
+
+### Qwen3.5 32k Liger logits OOM
+
+For Qwen3.5 long-context runs with `enable_liger_kernel: true`, training can fit
+while evaluation OOMs. This is counterintuitive but expected from the current
+Liger Qwen3.5 forward path: training with labels uses Liger's fused causal-LM
+loss and skips materializing full `batch x sequence x vocab` logits, while eval
+defaults to computing logits before loss because `model.training` is false.
+With Qwen3.5-9B at `cutoff_len: 32768` and vocab size 248320, one bf16 logits
+tensor is about 15 GiB before cross-entropy workspace, padding, or distributed
+gathering.
+
+Use loss-only eval and patch LLaMA-Factory SFT eval to pass Liger's
+`skip_logits=True` forward argument:
+
+```bash
+source .venv/bin/activate
+python scripts/patch_llamafactory_liger_eval_skip_logits.py
+```
+
+Set the training YAML eval options to:
+
+```yaml
+prediction_loss_only: true
+per_device_eval_batch_size: 1
+eval_strategy: steps
+```
+
+`prediction_loss_only: true` prevents Hugging Face Trainer from retaining and
+gathering logits, but it is not sufficient by itself for Liger Qwen3.5 because
+the model forward would still compute logits internally. The patch makes the
+forward loss-only as well. Do not use this patched path for generated-prediction
+metrics; it is intended for scalar eval loss/perplexity during SFT.
+
+For Qwen3.5-MoE models such as `Qwen3.5-35B-A3B`, training can OOM for the same
+underlying reason if LLaMA-Factory does not dispatch Liger for
+`model_type: qwen3_5_moe`. Recent Liger releases include
+`apply_liger_kernel_to_qwen3_5_moe`, whose training forward also avoids full
+logit materialization. The same patch script adds this LLaMA-Factory dispatch;
+without it, 32k full SFT materializes logits during training and can OOM before
+the first step.
+
+### Qwen3.5-35B-A3B multi-node efficiency
+
+On 2x8 H100 nodes, Qwen3.5-35B-A3B full SFT is communication-bound under
+ordinary ZeRO-3. The model has roughly 35B trainable parameters, but most are
+MoE expert weights. With 256 experts and 8 selected experts per token, the
+active-parameter estimate is only about 4B parameters per token, while ZeRO-3
+still shards and gathers the near-35B trainable parameter set. Padding/packing
+can still waste useful token work, but it is not enough to explain the observed
+low FLOP utilization by itself.
+
+The profile run showed `nccl:_all_gather_base` and `nccl:_reduce_scatter_base`
+as dominant costs, and NCCL initialized with socket networking rather than
+IB/RDMA:
+
+```text
+NCCL INFO NET/Plugin: Could not find: libnccl-net.so
+NCCL INFO NET/IB : No device found.
+NCCL INFO Using network Socket
+```
+
+The best reproducible LLaMA-Factory/DeepSpeed fix found so far is hierarchical
+ZeRO partitioning with one ZeRO parameter partition group per 8-GPU node:
+
+```json
+{
+  "zero_optimization": {
+    "stage": 3,
+    "overlap_comm": true,
+    "contiguous_gradients": true,
+    "reduce_bucket_size": "auto",
+    "stage3_prefetch_bucket_size": "auto",
+    "stage3_param_persistence_threshold": "auto",
+    "stage3_gather_16bit_weights_on_model_save": false,
+    "zero_hpz_partition_size": 8
+  }
+}
+```
+
+For a 16-rank run with ranks assigned node-locally, `zero_hpz_partition_size: 8`
+forms groups `[0..7]` and `[8..15]`, keeping ZeRO parameter all-gathers within
+each NVLink-connected node and avoiding the slow socket path for that traffic.
+This raised memory to roughly 67-69 GiB/GPU but improved post-warmup step time
+from about 75s to about 51s in the 35B-A3B 32k benchmark. Do not combine this
+with manual large ZeRO bucket tuning without re-testing; larger bucket variants
+OOMed or hit CUDA errors in smoke runs.
+
+### 2026-06-14 FSDP2 and WSD notes
+
+An upstream LLaMA-Factory `main` FSDP2 smoke run was attempted for
+`Qwen3.5-35B-A3B` full SFT at the same 32k context length and global batch as
+the hpZ8 run:
+
+```text
+job: 123812
+run: adp-bench-qwen35-35b-a3b-fsdp2-full-seq32768-2node-h100
+nodes: orchard-flame-[5,0]
+config: qwen35_35b_a3b_bench_fsdp2_full_seq32768_2node_h100.yaml
+accelerate: accelerate_fsdp2_qwen35_moe_2node_h100.yaml
+```
+
+This is a negative result for now. The job reached training/backward, then OOMed
+inside Liger fused MoE backward at microbatch size 1:
+
+```text
+liger_kernel/ops/fused_moe.py backward
+torch.OutOfMemoryError: Tried to allocate 724 MiB to 1024 MiB
+process has roughly 78.7-79.2 GiB in use on 80 GiB H100
+```
+
+Other ranks then reported NCCL `_ALLGATHER_BASE` remote-close errors, but those
+were a consequence of the OOM ranks exiting. This FSDP2 recipe is therefore not
+yet a replacement for hpZ8 at 32k unless memory is reduced elsewhere, for
+example by changing the MoE kernel, reducing context length, or adding a
+working sequence/context-parallel implementation.
+
+The optional HyperParallel backend is not required for the current stable
+DeepSpeed hpZ8 run. If it is tested later, install from the GitCode
+`mindspore/hyper-parallel` source rather than PyPI: the advertised
+`hyper_parallel` package was not present on PyPI, and the GitHub mirror lagged
+the LLaMA-Factory integration API at the time of testing. The patch helper now
+treats LLaMA-Factory HyperParallel modules as optional so missing or mismatched
+HyperParallel does not block ordinary SFT patching.
+
+For the next full run, use the best stable hpZ8 DeepSpeed recipe and switch only
+the scheduler to WSD:
+
+```yaml
+deepspeed: ds_z3_config_qwen35_hpz8.json
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+lr_scheduler_type: warmup_stable_decay
+warmup_ratio: 0.03
+eval_steps: 100
+save_only_model: false
+```
+
+Both installed LLaMA-Factory `0.9.5` and the upstream `main` overlay include the
+WSD scheduler hook. Without explicit `lr_scheduler_kwargs`, the local
+LLaMA-Factory helper defaults to one third of post-warmup steps as stable LR and
+the remaining two thirds as decay.
+
 Manifest counts:
 
 ```text
