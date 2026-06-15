@@ -43,6 +43,8 @@ DS_MODEL_ONLY_SCHEDULER_PATCH_MARKER = (
 SKIP_FINAL_SAVE_PATCH_MARKER = "# ADP patch: optionally skip benchmark final save."
 SKIP_FINAL_PLOT_PATCH_MARKER = "# ADP patch: skip loss plotting when benchmark state is skipped."
 FUSED_MOE_LIGER_EXPERTS_PATCH_MARKER = "# ADP patch: cuda_fused_moe recognizes LigerExperts."
+MCA_SKIP_FINAL_SAVE_PATCH_MARKER = "# ADP patch: optionally skip MCA benchmark final save."
+MCA_SKIP_FINAL_PLOT_PATCH_MARKER = "# ADP patch: skip MCA loss plotting when benchmark state is skipped."
 OLD = """        loss, generated_tokens, _ = super().prediction_step(
             model, inputs, prediction_loss_only=prediction_loss_only, ignore_keys=ignore_keys, **gen_kwargs
         )
@@ -164,6 +166,37 @@ SKIP_FINAL_PLOT_NEW = f"""        if (
             and not adp_skip_final_save  {SKIP_FINAL_PLOT_PATCH_MARKER}
         ):
 """
+MCA_SKIP_FINAL_SAVE_OLD = """    train_result = trainer.train(training_args.resume_from_checkpoint)
+    trainer.save_model()
+    trainer.log_metrics("train", train_result.metrics)
+    trainer.save_metrics("train", train_result.metrics)
+    trainer.save_state()
+"""
+MCA_SKIP_FINAL_SAVE_NEW = f"""    train_result = trainer.train(training_args.resume_from_checkpoint)
+    adp_skip_final_save = __import__("os").environ.get("ADP_LF_SKIP_FINAL_SAVE", "").lower() in {{
+        "1",
+        "true",
+        "yes",
+    }}
+    if adp_skip_final_save:
+        {MCA_SKIP_FINAL_SAVE_PATCH_MARKER}
+        logger.warning("ADP_LF_SKIP_FINAL_SAVE=1: skipping final MCA save_model/save_state for benchmark run.")
+    else:
+        trainer.save_model()
+
+    trainer.log_metrics("train", train_result.metrics)
+    trainer.save_metrics("train", train_result.metrics)
+    if not adp_skip_final_save:
+        trainer.save_state()
+"""
+MCA_SKIP_FINAL_PLOT_OLD = """    if trainer.is_world_process_zero() and finetuning_args.plot_loss:
+"""
+MCA_SKIP_FINAL_PLOT_NEW = f"""    if (
+        trainer.is_world_process_zero()
+        and finetuning_args.plot_loss
+        and not adp_skip_final_save  {MCA_SKIP_FINAL_PLOT_PATCH_MARKER}
+    ):
+"""
 FUSED_MOE_LIGER_EXPERTS_OLD = """    "Qwen3_5MoeForCausalLM": {
         "Qwen3_5MoeExperts": _triton_moe_experts_forward,
     },
@@ -279,6 +312,22 @@ def main() -> int:
             SKIP_FINAL_PLOT_NEW,
             SKIP_FINAL_PLOT_PATCH_MARKER,
             "hyper-parallel SFT benchmark plot_loss skip",
+            missing_ok=True,
+        ),
+        patch_file(
+            "llamafactory.train.mca.workflow",
+            MCA_SKIP_FINAL_SAVE_OLD,
+            MCA_SKIP_FINAL_SAVE_NEW,
+            MCA_SKIP_FINAL_SAVE_PATCH_MARKER,
+            "MCA SFT benchmark final save skip",
+            missing_ok=True,
+        ),
+        patch_file(
+            "llamafactory.train.mca.workflow",
+            MCA_SKIP_FINAL_PLOT_OLD,
+            MCA_SKIP_FINAL_PLOT_NEW,
+            MCA_SKIP_FINAL_PLOT_PATCH_MARKER,
+            "MCA SFT benchmark plot_loss skip",
             missing_ok=True,
         ),
         patch_file(

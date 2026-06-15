@@ -165,6 +165,49 @@ the LLaMA-Factory integration API at the time of testing. The patch helper now
 treats LLaMA-Factory HyperParallel modules as optional so missing or mismatched
 HyperParallel does not block ordinary SFT patching.
 
+### 2026-06-14 MCA / Megatron-Core notes
+
+LLaMA-Factory has a Megatron-Core Adapter path gated by `USE_MCA=1`. Do not use
+the PyPI `mcore-adapter==0.0.1` package; it installs no usable
+`mcore_adapter` module. The working adapter source is the ROLL subdirectory:
+
+```bash
+python -m pip install --force-reinstall --no-deps \
+  "git+https://github.com/alibaba/roll.git#subdirectory=mcore_adapter"
+python -m pip install --no-deps "megatron-core>=0.13.0,<0.14.0"
+```
+
+This produced `mcore_adapter==0.9.0` and `megatron-core==0.13.1` in the
+isolated MCA venv. LLaMA-Factory's MCA parser exposes the relevant MoE training
+knobs: `expert_model_parallel_size`, `pipeline_model_parallel_size`,
+`context_parallel_size`, `sequence_parallel`, `moe_token_dispatcher_type`,
+`moe_grouped_gemm`, `moe_shared_expert_overlap`, distributed optimizer, and
+gradient/parameter overlap.
+
+Transformer Engine did not install cleanly in the current Torch 2.12 / CUDA 13
+venv. `transformer-engine[pytorch]==2.16.0` downloaded the CUDA 13 support
+wheel but had no prebuilt `transformer_engine_torch` wheel for the exact
+`torch2.12.0+cu130` ABI, then failed source compilation because `cudnn.h` was
+not available on the build host. As a result, the first MCA smoke uses
+`transformer_impl: local`; Megatron warns that it is falling back to Torch Norm
+and Torch optimizer helpers. A fully optimized Megatron recipe likely needs a
+matching NGC-style container or CUDA/cuDNN headers plus a compatible TE wheel.
+
+The first two-node MCA smoke is:
+
+```text
+job: 123821
+run: adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke2
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_pp4_ep4_smoke.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_pp4_ep4_smoke.sbatch
+parallelism: TP=1, PP=4, EP=4, CP=1, GAS=4
+```
+
+The raw copied venv console scripts still point at the original venv. Use
+`scripts/mca_bin/torchrun` with `MCA_PYTHON=/path/to/.venv_mca/bin/python` so
+LLaMA-Factory's MCA launcher calls the MCA interpreter via
+`python -m torch.distributed.run`.
+
 For the next full run, use the best stable hpZ8 DeepSpeed recipe and switch only
 the scheduler to WSD:
 
