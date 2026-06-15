@@ -598,6 +598,40 @@ launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke9_fa3_selective_moe_50
 recompute_modules: moe,moe_act
 ```
 
+Job `123850` (`smoke9_fa3_selective_moe_50step`) also failed before logging
+loss:
+
+```text
+state: FAILED
+elapsed: 00:02:38
+exit_code: 143:0
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.24 GiB.
+GPU 3 had 1.15 GiB free with roughly 78.02 GiB in use.
+```
+
+This time the traceback confirmed that MoE-layer checkpointing was active:
+
+```text
+MoELayer.forward
+tensor_parallel.checkpoint
+routed_experts_compute
+token_dispatcher.combine_preprocess
+reduce_scatter_to_sequence_parallel_region
+torch.empty_like(input_tensor_list[rank])
+```
+
+So selective MoE recompute reduced live memory compared with `core_attn` only,
+but not enough to fit the first forward. Because the failed allocation missed
+by about 90 MiB, the next smoke adds `layernorm` recompute to drop the
+pre-MLP layernorm state around the MoE path while still avoiding full
+gated-delta attention recompute:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke10_fa3_selective_moe_lnorm_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke10_fa3_selective_moe_lnorm_50step.sbatch
+recompute_modules: moe,moe_act,layernorm
+```
+
 Open MCA memory/speed candidates after the TP2 smoke:
 
 - Implement context-parallel gated-delta attention for Qwen3.5/MCA so the 32k
