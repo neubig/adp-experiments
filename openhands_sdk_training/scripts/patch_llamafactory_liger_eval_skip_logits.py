@@ -247,7 +247,7 @@ def patch_file(
 ) -> int:
     try:
         spec = importlib.util.find_spec(module)
-    except ModuleNotFoundError as exc:
+    except (ImportError, ModuleNotFoundError) as exc:
         if missing_ok:
             print(f"Skipping optional {description}: {module} import failed ({exc}).")
             return 0

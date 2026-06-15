@@ -297,6 +297,11 @@ job: 123825
 run: adp-bench-qwen35-35b-a3b-hpz8-cuda-fused-moe-no-gc-seq32768-smoke
 ```
 
+Job `123825` failed before launch because the patch helper tried to import the
+optional MCA workflow in the base venv, where `mcore_adapter` is intentionally
+not installed. The helper now skips optional MCA patches on `ImportError`; the
+same smoke was resubmitted as job `123826`.
+
 Both installed LLaMA-Factory `0.9.5` and the upstream `main` overlay include the
 WSD scheduler hook. Without explicit `lr_scheduler_kwargs`, the local
 LLaMA-Factory helper defaults to one third of post-warmup steps as stable LR and
