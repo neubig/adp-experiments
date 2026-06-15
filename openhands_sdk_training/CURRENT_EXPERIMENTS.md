@@ -193,6 +193,45 @@ not available on the build host. As a result, the first MCA smoke uses
 and Torch optimizer helpers. A fully optimized Megatron recipe likely needs a
 matching NGC-style container or CUDA/cuDNN headers plus a compatible TE wheel.
 
+Follow-up: Transformer Engine can be built in the isolated MCA venv if the pip
+NVIDIA headers are exposed during compilation:
+
+```bash
+VENV=.venv_mca
+SITE="$VENV/lib/python3.11/site-packages"
+export CUDNN_INCLUDE_DIR="$SITE/nvidia/cudnn/include"
+export CUDNN_LIB_DIR="$SITE/nvidia/cudnn/lib"
+export CPLUS_INCLUDE_PATH="$SITE/nvidia/cudnn/include:$SITE/nvidia/nccl/include:${CPLUS_INCLUDE_PATH:-}"
+export C_INCLUDE_PATH="$SITE/nvidia/cudnn/include:$SITE/nvidia/nccl/include:${C_INCLUDE_PATH:-}"
+export LIBRARY_PATH="$SITE/nvidia/cudnn/lib:$SITE/nvidia/nccl/lib:${LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$SITE/nvidia/cudnn/lib:$SITE/nvidia/nccl/lib:${LD_LIBRARY_PATH:-}"
+export NVTE_FRAMEWORK=pytorch
+export MAX_JOBS=$(nproc)
+export CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)
+python -m pip install -v --no-build-isolation --no-deps \
+  transformer-engine==2.16.0 \
+  transformer-engine-cu13==2.16.0 \
+  transformer-engine-torch==2.16.0
+```
+
+Runtime import additionally requires using the venv CUDA 13 libraries before
+the system CUDA libraries. `transformer-engine==2.16.0` referenced a
+`libcublasLt.so.13` symbol that was not present in the default cuBLAS library,
+so the MCA venv was upgraded to `nvidia-cublas==13.5.1.27` with `--no-deps`
+after installing TE's Python-only dependencies (`onnxscript` and
+`nvdlfw-inspect`). The MCA launcher now exports:
+
+```bash
+SITE="$VENV/lib/python3.11/site-packages"
+export LD_LIBRARY_PATH="$SITE/nvidia/cu13/lib:$SITE/nvidia/cudnn/lib:$SITE/nvidia/nccl/lib:${LD_LIBRARY_PATH:-}"
+```
+
+With that path, a local import probe succeeded for `transformer_engine.pytorch`
+and `mcore_adapter.models.AutoConfig` reported
+`experimental_attention_variant=gated_delta_net` for Qwen3.5-35B-A3B. Note
+that this makes the venv formally inconsistent with Torch 2.12's declared
+`nvidia-cublas<=13.1.1.3` dependency, so keep it isolated to MCA experiments.
+
 The first two-node MCA smoke is:
 
 ```text
@@ -249,7 +288,7 @@ transformer_impl: transformer_engine
 experimental_attention_variant: gated_delta_net
 ```
 
-The current patched MCA smoke is queued as:
+The MCA smoke at this point was:
 
 ```text
 job: 123824
@@ -270,8 +309,10 @@ This comes from Megatron's experimental gated-delta attention spec. The module
 is present in `megatron-core==0.16.1`, but it only defines `TESpecProvider` when
 Transformer Engine imports successfully. ROLL's Qwen3.5 model also asserts
 `transformer_impl == "transformer_engine"` when the gated-delta attention
-variant is present, so MCA is blocked in this venv until a compatible
-Transformer Engine stack is available.
+variant is present, so MCA was blocked until a compatible Transformer Engine
+stack was available. The TE build/runtime notes above describe the fix; the MCA
+launcher now exports the isolated venv's CUDA 13, cuDNN, and NCCL libraries so
+future MCA submissions load that working stack.
 
 For the next full run, use the best stable hpZ8 DeepSpeed recipe and switch only
 the scheduler to WSD:
@@ -288,9 +329,19 @@ save_only_model: false
 ```
 
 The prepared no-gradient-checkpointing fallback keeps the same hpZ8 and
-`cuda_fused_moe` settings, changing only `gradient_checkpointing: false` for a
-12-step smoke. This isolates activation recompute overhead from the fused-MoE
-kernel choice. The first queued job for this fallback is:
+`cuda_fused_moe` settings for a 12-step smoke. This isolates activation
+recompute overhead from the fused-MoE kernel choice. LLaMA-Factory's model
+preparation path does **not** use only Hugging Face's
+`gradient_checkpointing: false` for this; it checks the model argument
+`disable_gradient_checkpointing`. Correct no-GC configs should therefore set
+both:
+
+```yaml
+gradient_checkpointing: false
+disable_gradient_checkpointing: true
+```
+
+The first queued job for this fallback was:
 
 ```text
 job: 123825
@@ -301,6 +352,14 @@ Job `123825` failed before launch because the patch helper tried to import the
 optional MCA workflow in the base venv, where `mcore_adapter` is intentionally
 not installed. The helper now skips optional MCA patches on `ImportError`; the
 same smoke was resubmitted as job `123826`.
+
+Job `123826` completed, but it was **not** a valid no-gradient-checkpointing
+measurement: the log still included `Gradient checkpointing enabled.` twice.
+The resulting timing closely matched the checkpointed hpZ8 fused-MoE smoke
+because checkpointing was still active. The corrected smoke adds
+`disable_gradient_checkpointing: true`, uses run name
+`adp-bench-qwen35-35b-a3b-hpz8-cuda-fused-moe-disable-gc-seq32768-smoke`, and
+was submitted as job `123827`.
 
 Both installed LLaMA-Factory `0.9.5` and the upstream `main` overlay include the
 WSD scheduler hook. Without explicit `lr_scheduler_kwargs`, the local

@@ -18,6 +18,7 @@ set -euo pipefail
 
 CODE_DIR=/home/gneubig/workspace/project/7511d8c2946a4a53a9b2a4f643840479/adp-experiments/openhands_sdk_training
 VENV_DIR="${CODE_DIR}/.venv_mca"
+MCA_SITE_DIR="${VENV_DIR}/lib/python3.11/site-packages"
 RUN_DIR=/project/flame/gneubig/adp/runs/openhands_sdk_training/full_condenser_24k_all_records_v2_adapted
 CONFIG_YAML="${CODE_DIR}/configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_pp4_ep4_smoke.yaml"
 OUTPUT_DIR="${RUN_DIR}/output_bench_qwen35_35b_a3b_mca_pp4_ep4_seq32768_smoke5"
@@ -29,6 +30,7 @@ cd "${CODE_DIR}"
 
 export MCA_PYTHON="${VENV_DIR}/bin/python"
 export PATH="${CODE_DIR}/scripts/mca_bin:${PATH}"
+export LD_LIBRARY_PATH="${MCA_SITE_DIR}/nvidia/cu13/lib:${MCA_SITE_DIR}/nvidia/cudnn/lib:${MCA_SITE_DIR}/nvidia/nccl/lib:${LD_LIBRARY_PATH:-}"
 "${MCA_PYTHON}" "${CODE_DIR}/scripts/patch_llamafactory_liger_eval_skip_logits.py"
 
 export HF_HOME=${HF_HOME:-/project/flame/gneubig/adp/cache/hf}
@@ -60,7 +62,7 @@ export MASTER_ADDR="${nodes[0]}"
 export MASTER_PORT=${MASTER_PORT:-$((30500 + SLURM_JOB_ID % 1000))}
 export NNODES="${SLURM_NNODES}"
 export NPROC_PER_NODE=8
-export CONFIG_YAML CODE_DIR VENV_DIR GPU_LOG
+export CONFIG_YAML CODE_DIR VENV_DIR MCA_SITE_DIR GPU_LOG
 
 echo "job_id=${SLURM_JOB_ID}"
 echo "node_list=${SLURM_JOB_NODELIST}"
@@ -112,6 +114,7 @@ srun --nodes="${SLURM_NNODES}" --ntasks="${SLURM_NNODES}" --ntasks-per-node=1 --
   export FORCE_TORCHRUN=1
   export MCA_PYTHON="${VENV_DIR}/bin/python"
   export PATH="${CODE_DIR}/scripts/mca_bin:${PATH}"
+  export LD_LIBRARY_PATH="${MCA_SITE_DIR}/nvidia/cu13/lib:${MCA_SITE_DIR}/nvidia/cudnn/lib:${MCA_SITE_DIR}/nvidia/nccl/lib:${LD_LIBRARY_PATH:-}"
   export NNODES="${NNODES}"
   export NPROC_PER_NODE="${NPROC_PER_NODE}"
   export NODE_RANK="${SLURM_NODEID}"

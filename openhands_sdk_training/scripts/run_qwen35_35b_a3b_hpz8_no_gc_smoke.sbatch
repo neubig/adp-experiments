@@ -21,7 +21,7 @@ VENV_DIR="${CODE_DIR}/.venv"
 RUN_DIR=/project/flame/gneubig/adp/runs/openhands_sdk_training/full_condenser_24k_all_records_v2_adapted
 MODEL_DIR=/project/flame/gneubig/adp/models/Qwen3.5-35B-A3B
 CONFIG_YAML="${CODE_DIR}/configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_hpz8_no_gc_smoke.yaml"
-OUTPUT_DIR="${RUN_DIR}/output_bench_qwen35_35b_a3b_hpz8_cuda_fused_moe_no_gc_seq32768_smoke"
+OUTPUT_DIR="${RUN_DIR}/output_bench_qwen35_35b_a3b_hpz8_cuda_fused_moe_disable_gc_seq32768_smoke"
 LOG_DIR="${RUN_DIR}/logs"
 GPU_LOG="${LOG_DIR}/gpu_monitor_qwen35_35b_a3b_hpz8_no_gc_smoke_${SLURM_JOB_ID}.log"
 
@@ -36,7 +36,7 @@ export HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE:-${HF_HOME}/hub}
 export TOKENIZERS_PARALLELISM=false
 export WANDB_ENTITY=${WANDB_ENTITY:-gneubig}
 export WANDB_PROJECT=${WANDB_PROJECT:-adp-experiments}
-export WANDB_NAME=${WANDB_NAME:-adp-bench-qwen35-35b-a3b-hpz8-cuda-fused-moe-no-gc-seq32768-smoke}
+export WANDB_NAME=${WANDB_NAME:-adp-bench-qwen35-35b-a3b-hpz8-cuda-fused-moe-disable-gc-seq32768-smoke}
 export WANDB_DIR=${WANDB_DIR:-${RUN_DIR}/wandb}
 export WANDB_CACHE_DIR=${WANDB_CACHE_DIR:-${RUN_DIR}/wandb_cache}
 export WANDB_ARTIFACT_DIR=${WANDB_ARTIFACT_DIR:-${RUN_DIR}/wandb_artifacts}
