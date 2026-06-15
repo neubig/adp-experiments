@@ -764,8 +764,48 @@ peak sampled memory: up to about 81.0 GiB on local rank 4 of the second node
 This confirms that simply enabling virtual pipeline interleaving is not an
 efficiency fix here. It removes the non-interleaved p2p warning, but the
 schedule overhead and memory pressure are much worse than the plain PP4 FA3
-baseline. Keep `qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke7_fa3_50step.yaml` as the
-best measured MCA recipe so far.
+baseline.
+
+The next smoke kept the same fast FA3 TP2/PP4/EP2 topology but enabled
+sequence parallelism without virtual pipeline interleaving:
+
+```text
+job: 123865
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_sp_smoke15_fa3_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_sp_smoke15_fa3_50step.sbatch
+parallelism: TP=2, PP=4, EP=2, CP=1, SP=true, VP=null, GAS=8
+```
+
+Job `123865` completed all 50 steps:
+
+```text
+state: COMPLETED
+train_runtime: 1081s
+train_steps_per_second: 0.046
+train_loss: 0.6535
+token/sec/GPU mean from logged step 11 onward: about 17.4k
+peak sampled memory MiB by local GPU:
+  0: 71037, 1: 71473, 2: 67977, 3: 67957,
+  4: 80557, 5: 80497, 6: 79817, 7: 79981
+```
+
+This is the best 50-step MCA smoke measured so far, but only by a small margin:
+`1081s` versus `1091s` for the matched non-SP FA3 baseline. Sequence
+parallelism removed the parameter all-gather warning, but the non-interleaved
+p2p warning and AccumulateGrad stream warning remained:
+
+```text
+non_interleaved_p2p_warning_count: 16
+param_allgather_warning_count: 0
+accumulategrad_stream_warning_count: 16
+```
+
+Keep
+`qwen35_35b_a3b_mca_tp2_pp4_ep2_sp_smoke15_fa3_50step.yaml` as the best
+measured MCA recipe so far. The small gain suggests SP is useful as a default
+setting for TP+MoE, but it is not the fundamental fix for low MFU; the largest
+remaining targets are still the non-interleaved pipeline schedule and the
+Qwen3.5 gated-delta implementation.
 
 Open MCA memory/speed candidates after the TP2 smoke:
 
