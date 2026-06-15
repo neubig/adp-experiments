@@ -25,6 +25,11 @@ model-only checkpoint when the model is already loaded from that checkpoint.
 This preserves Trainer's data skipping via ``resume_from_checkpoint`` even when
 the previous run used ``save_only_model: true`` and therefore did not write
 DeepSpeed optimizer/scheduler state.
+
+For MCA tensor-parallel runs, it also rounds the per-step padded sequence length
+up to a multiple of the tensor-parallel world size. Megatron sequence parallel
+uses reduce-scatter along the sequence dimension, so TP>1 runs can fail on any
+gradient-accumulation group whose local max sequence length is not TP-divisible.
 """
 
 from __future__ import annotations
@@ -46,6 +51,7 @@ FUSED_MOE_LIGER_EXPERTS_PATCH_MARKER = "# ADP patch: cuda_fused_moe recognizes L
 MCA_SKIP_FINAL_SAVE_PATCH_MARKER = "# ADP patch: optionally skip MCA benchmark final save."
 MCA_SKIP_FINAL_PLOT_PATCH_MARKER = "# ADP patch: skip MCA loss plotting when benchmark state is skipped."
 MCA_QWEN35_LINEAR_CONFIG_PATCH_MARKER = "# ADP patch: accept Qwen3.5 linear-attention config fields."
+MCA_TP_SEQ_LENGTH_PATCH_MARKER = "# ADP patch: round MCA step sequence length for tensor parallelism."
 OLD = """        loss, generated_tokens, _ = super().prediction_step(
             model, inputs, prediction_loss_only=prediction_loss_only, ignore_keys=ignore_keys, **gen_kwargs
         )
@@ -234,6 +240,25 @@ FUSED_MOE_LIGER_EXPERTS_NEW = f"""    "Qwen3_5MoeForCausalLM": {{
         "LigerExperts": _triton_moe_experts_forward,
     }},
 """
+MCA_TP_SEQ_LENGTH_OLD = """        if len(step_inputs) < self.args.gradient_accumulation_steps:
+            return None, 0, 0
+
+        if not self.args.allow_variable_seq_lengths():
+            step_inputs = [self._pad_batched_inputs(inputs, max_seq_length) for inputs in step_inputs]
+"""
+MCA_TP_SEQ_LENGTH_NEW = f"""        if len(step_inputs) < self.args.gradient_accumulation_steps:
+            return None, 0, 0
+
+        tensor_parallel_size = getattr(self.args, "tensor_model_parallel_size", 1) or 1
+        if tensor_parallel_size > 1 and not self.args.allow_variable_seq_lengths():
+            remainder = max_seq_length % tensor_parallel_size
+            if remainder:
+                {MCA_TP_SEQ_LENGTH_PATCH_MARKER}
+                max_seq_length += tensor_parallel_size - remainder
+
+        if not self.args.allow_variable_seq_lengths():
+            step_inputs = [self._pad_batched_inputs(inputs, max_seq_length) for inputs in step_inputs]
+"""
 
 
 def patch_file(
@@ -365,6 +390,14 @@ def main() -> int:
             FUSED_MOE_LIGER_EXPERTS_NEW,
             FUSED_MOE_LIGER_EXPERTS_PATCH_MARKER,
             "cuda_fused_moe LigerExperts compatibility",
+        ),
+        patch_file(
+            "mcore_adapter.trainer.trainer",
+            MCA_TP_SEQ_LENGTH_OLD,
+            MCA_TP_SEQ_LENGTH_NEW,
+            MCA_TP_SEQ_LENGTH_PATCH_MARKER,
+            "MCA tensor-parallel sequence-length padding",
+            missing_ok=True,
         ),
     )
 

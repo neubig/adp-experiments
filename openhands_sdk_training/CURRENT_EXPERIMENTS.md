@@ -317,6 +317,34 @@ reason: shard tensor dimensions and let MCA enable sequence parallelism for
         TP+EP, without using the unsupported gated-delta context-parallel path.
 ```
 
+Job `123832` (`smoke1`) reached training and logged one loss:
+
+```text
+{'loss': '0.8861', 'grad_norm': '9.925', 'learning_rate': '1e-05',
+ 'skipped_iter': 0, 'num_zeros_in_grad': 0,
+ 'token_per_sec_per_gpu': '1092', 'epoch': '4.117e-05'}
+```
+
+Peak memory stayed well below the smoke7 OOM level, roughly 45-62GB depending
+on rank/stage. It then failed on the second forward at embedding
+sequence-parallel reduce-scatter:
+
+```text
+AssertionError: First dimension of the tensor should be divisible by tensor parallel size
+```
+
+The root cause is MCA padding each optimizer step to the local
+gradient-accumulation max sequence length, which can be odd even though the
+nominal cutoff is 32768. The ADP patch helper now rounds MCA's padded step
+length up to a multiple of `tensor_model_parallel_size` before `_pad_batched_inputs`.
+The patched rerun is:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke2.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke2.sbatch
+parallelism: TP=2, PP=4, EP=2, CP=1, GAS=8
+```
+
 Open MCA memory/speed candidates after the TP2 smoke:
 
 - Implement context-parallel gated-delta attention for Qwen3.5/MCA so the 32k
