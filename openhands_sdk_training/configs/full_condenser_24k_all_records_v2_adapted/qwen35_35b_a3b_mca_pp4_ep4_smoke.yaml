@@ -20,14 +20,14 @@ data_shared_file_system: true
 tokenized_path: /project/flame/gneubig/adp/runs/openhands_sdk_training/full_condenser_24k_all_records_v2_adapted/tokenized_qwen35_9b_seq32768_all_records_v2_adp_refactor_sharedfs_singleproc_flashattn
 
 ### output
-output_dir: /project/flame/gneubig/adp/runs/openhands_sdk_training/full_condenser_24k_all_records_v2_adapted/output_bench_qwen35_35b_a3b_mca_pp4_ep4_seq32768_smoke2
+output_dir: /project/flame/gneubig/adp/runs/openhands_sdk_training/full_condenser_24k_all_records_v2_adapted/output_bench_qwen35_35b_a3b_mca_pp4_ep4_seq32768_smoke3
 logging_steps: 1
 save_strategy: "no"
 save_steps: 100000
 plot_loss: false
 save_only_model: false
 report_to: wandb
-run_name: adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke2
+run_name: adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke3
 
 ### train
 per_device_train_batch_size: 1

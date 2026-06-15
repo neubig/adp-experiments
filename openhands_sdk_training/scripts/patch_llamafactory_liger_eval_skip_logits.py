@@ -45,6 +45,7 @@ SKIP_FINAL_PLOT_PATCH_MARKER = "# ADP patch: skip loss plotting when benchmark s
 FUSED_MOE_LIGER_EXPERTS_PATCH_MARKER = "# ADP patch: cuda_fused_moe recognizes LigerExperts."
 MCA_SKIP_FINAL_SAVE_PATCH_MARKER = "# ADP patch: optionally skip MCA benchmark final save."
 MCA_SKIP_FINAL_PLOT_PATCH_MARKER = "# ADP patch: skip MCA loss plotting when benchmark state is skipped."
+MCA_QWEN35_LINEAR_CONFIG_PATCH_MARKER = "# ADP patch: accept Qwen3.5 linear-attention config fields."
 OLD = """        loss, generated_tokens, _ = super().prediction_step(
             model, inputs, prediction_loss_only=prediction_loss_only, ignore_keys=ignore_keys, **gen_kwargs
         )
@@ -197,6 +198,26 @@ MCA_SKIP_FINAL_PLOT_NEW = f"""    if (
         and not adp_skip_final_save  {MCA_SKIP_FINAL_PLOT_PATCH_MARKER}
     ):
 """
+MCA_QWEN35_LINEAR_CONFIG_OLD = """    # Gated Delta Net specific (for linear attention layers)
+    layer_types: Optional[list[str]] = None
+
+    # Vision specific
+"""
+MCA_QWEN35_LINEAR_CONFIG_NEW = f"""    # Gated Delta Net specific (for linear attention layers)
+    layer_types: Optional[list[str]] = None
+    linear_conv_kernel_dim: int = 4
+    linear_key_head_dim: int = 128
+    linear_value_head_dim: int = 128
+    linear_num_key_heads: int = 16
+    linear_num_value_heads: int = 32
+    linear_attention_freq: int = 4
+    attention_output_gate: bool = True
+    experimental_attention_variant: Optional[str] = None
+    moe_shared_expert_gate: bool = True
+    {MCA_QWEN35_LINEAR_CONFIG_PATCH_MARKER}
+
+    # Vision specific
+"""
 FUSED_MOE_LIGER_EXPERTS_OLD = """    "Qwen3_5MoeForCausalLM": {
         "Qwen3_5MoeExperts": _triton_moe_experts_forward,
     },
@@ -328,6 +349,14 @@ def main() -> int:
             MCA_SKIP_FINAL_PLOT_NEW,
             MCA_SKIP_FINAL_PLOT_PATCH_MARKER,
             "MCA SFT benchmark plot_loss skip",
+            missing_ok=True,
+        ),
+        patch_file(
+            "mcore_adapter.models.qwen3_5.config_qwen3_5",
+            MCA_QWEN35_LINEAR_CONFIG_OLD,
+            MCA_QWEN35_LINEAR_CONFIG_NEW,
+            MCA_QWEN35_LINEAR_CONFIG_PATCH_MARKER,
+            "MCA Qwen3.5 linear-attention config fields",
             missing_ok=True,
         ),
         patch_file(

@@ -208,6 +208,34 @@ The raw copied venv console scripts still point at the original venv. Use
 LLaMA-Factory's MCA launcher calls the MCA interpreter via
 `python -m torch.distributed.run`.
 
+Two early MCA smoke attempts failed before training:
+
+```text
+job 123820: MCA parser rejected overwrite_output_dir; removed that key from the smoke config.
+job 123821: mcore_adapter converted Qwen3.5-MoE HF config keys into MCA keys,
+           but Qwen3_5Config did not declare Qwen3.5 linear-attention fields,
+           causing TypeError on linear_conv_kernel_dim.
+```
+
+The ADP patch helper now also patches
+`mcore_adapter.models.qwen3_5.config_qwen3_5` to declare the Qwen3.5
+linear-attention and Qwen3.5-MoE template fields that the adapter itself maps:
+`linear_conv_kernel_dim`, `linear_key_head_dim`, `linear_value_head_dim`,
+`linear_num_key_heads`, `linear_num_value_heads`, `linear_attention_freq`,
+`attention_output_gate`, `experimental_attention_variant`, and
+`moe_shared_expert_gate`. After this patch, a local
+`AutoConfig.from_pretrained("/project/flame/gneubig/adp/models/Qwen3.5-35B-A3B")`
+probe succeeded and reported `num_moe_experts=256`, `moe_router_topk=8`, and
+`experimental_attention_variant=gated_delta_net`.
+
+The current patched MCA smoke is queued as:
+
+```text
+job: 123822
+run: adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke3
+parallelism: TP=1, PP=4, EP=4, CP=1, GAS=4
+```
+
 For the next full run, use the best stable hpZ8 DeepSpeed recipe and switch only
 the scheduler to WSD:
 

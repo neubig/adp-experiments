@@ -20,7 +20,7 @@ CODE_DIR=/home/gneubig/workspace/project/7511d8c2946a4a53a9b2a4f643840479/adp-ex
 VENV_DIR="${CODE_DIR}/.venv_mca"
 RUN_DIR=/project/flame/gneubig/adp/runs/openhands_sdk_training/full_condenser_24k_all_records_v2_adapted
 CONFIG_YAML="${CODE_DIR}/configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_pp4_ep4_smoke.yaml"
-OUTPUT_DIR="${RUN_DIR}/output_bench_qwen35_35b_a3b_mca_pp4_ep4_seq32768_smoke2"
+OUTPUT_DIR="${RUN_DIR}/output_bench_qwen35_35b_a3b_mca_pp4_ep4_seq32768_smoke3"
 LOG_DIR="${RUN_DIR}/logs"
 GPU_LOG="${LOG_DIR}/gpu_monitor_qwen35_35b_a3b_mca_pp4_ep4_smoke_${SLURM_JOB_ID}.log"
 
@@ -37,7 +37,7 @@ export HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE:-${HF_HOME}/hub}
 export TOKENIZERS_PARALLELISM=false
 export WANDB_ENTITY=${WANDB_ENTITY:-gneubig}
 export WANDB_PROJECT=${WANDB_PROJECT:-adp-experiments}
-export WANDB_NAME=${WANDB_NAME:-adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke2}
+export WANDB_NAME=${WANDB_NAME:-adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke3}
 export WANDB_DIR=${WANDB_DIR:-${RUN_DIR}/wandb}
 export WANDB_CACHE_DIR=${WANDB_CACHE_DIR:-${RUN_DIR}/wandb_cache}
 export WANDB_ARTIFACT_DIR=${WANDB_ARTIFACT_DIR:-${RUN_DIR}/wandb_artifacts}
