@@ -632,6 +632,23 @@ launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke10_fa3_selective_moe_l
 recompute_modules: moe,moe_act,layernorm
 ```
 
+Job `123852` (`smoke10_fa3_selective_moe_lnorm_50step`) failed as well:
+
+```text
+state: FAILED
+elapsed: 00:03:46
+exit_code: 143:0
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.65 GiB.
+GPU 0/1 had about 1.47-1.59 GiB free with roughly 77.6-77.7 GiB in use.
+```
+
+The GPU monitor sampled the first node at roughly 80.3-80.7 GiB on local ranks
+0-3 before failure. Adding `layernorm` recompute reduced allocated PyTorch
+memory slightly but changed the failing allocation shape and still did not fit.
+For the current TP2/PP4/EP2/CP1 geometry, full-layer recompute remains
+necessary; selective recompute is not a viable immediate speedup unless memory
+is reduced by another mechanism first.
+
 Open MCA memory/speed candidates after the TP2 smoke:
 
 - Implement context-parallel gated-delta attention for Qwen3.5/MCA so the 32k
