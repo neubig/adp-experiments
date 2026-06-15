@@ -443,6 +443,27 @@ config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2
 launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke5_fa4_50step.sbatch
 ```
 
+Job `123844` (`smoke5_fa4_50step`) completed:
+
+```text
+state: COMPLETED
+elapsed: 00:20:16
+exit_code: 0:0
+train_runtime: 1131.0s
+train_steps_per_second: 0.044
+train_loss: 0.6549
+```
+
+The run stayed healthy and logged losses through 50 steps. After startup, the
+progress bar settled mostly around 15-16 seconds per step. To determine whether
+this is actually better than the non-FA4 environment, the matched baseline is a
+50-step rerun of smoke3 with the same WSD schedule and no FA4 clone:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke6_base_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke6_base_50step.sbatch
+```
+
 Open MCA memory/speed candidates after the TP2 smoke:
 
 - Implement context-parallel gated-delta attention for Qwen3.5/MCA so the 32k
