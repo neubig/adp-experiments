@@ -361,6 +361,23 @@ because checkpointing was still active. The corrected smoke adds
 `adp-bench-qwen35-35b-a3b-hpz8-cuda-fused-moe-disable-gc-seq32768-smoke`, and
 was submitted as job `123827`.
 
+Job `123827` did honor the no-gradient-checkpointing setting: the log did not
+include `Gradient checkpointing enabled.` It failed on the first real training
+step with CUDA OOM before logging a loss:
+
+```text
+rank12: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 876 MiB.
+GPU 4 total capacity: 79.18 GiB
+process memory in use: 78.63 GiB
+allocated by PyTorch: 75.32 GiB
+reserved but unallocated: 1.20 GiB
+```
+
+Conclusion: for the current 35B-A3B hpZ8, 32k-context, microbatch-1 recipe,
+gradient checkpointing is not optional. It almost certainly costs extra
+recompute, but disabling it exceeds 80GB H100 memory before a training step can
+complete.
+
 Both installed LLaMA-Factory `0.9.5` and the upstream `main` overlay include the
 WSD scheduler hook. Without explicit `lr_scheduler_kwargs`, the local
 LLaMA-Factory helper defaults to one third of post-warmup steps as stable LR and
