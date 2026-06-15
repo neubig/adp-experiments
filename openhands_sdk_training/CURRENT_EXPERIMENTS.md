@@ -906,14 +906,99 @@ therefore not yet a current speed win; it needs a real CP batching fix and
 profiling of the FLA CP kernels before it can compete with the non-CP TP2/PP4
 recipe.
 
+The CP issue had two independent parts. First, Megatron/MCA's causal
+load-balanced CP slicing reshapes the sequence into `2 * context_parallel_size`
+chunks and assigns each rank one head chunk and one tail chunk. With sequence
+parallel enabled, the trainer padding must therefore round each step to a
+multiple that is safe for TP, the CP view, and TP*CP sequence parallelism. The
+ADP patch helper now rounds to
+`lcm(tensor_model_parallel_size, 2 * context_parallel_size,
+tensor_model_parallel_size * context_parallel_size)` when CP is enabled.
+
+Second, the FLA GatedDeltaNet CP operators assume each CP rank owns one
+contiguous global sequence interval. Megatron's head-tail CP layout violates
+that assumption: for CP=2, rank 0 owns chunks `[0, 3]` and rank 1 owns chunks
+`[1, 2]`. Feeding that directly into FLA with `build_cp_context` lets training
+run, but the recurrent/conv boundary metadata is semantically wrong. NVIDIA
+NeMo AutoModel's Qwen3.5 CP linear-attention wrapper takes the same conservative
+approach now used here: gather CP shards, restore dense contiguous sequence
+order for FLA, run the linear-attention operator, then restore the
+load-balanced layout for the surrounding transformer
+(see `nemo_automodel.components.models.qwen3_5_moe.cp_linear_attn`).
+
+The ADP patch helper now implements that bridge inside
+`megatron.core.ssm.gated_delta_net`:
+
+- `_adp_cp_undo_load_balancing`: all-gather rank-local head-tail tensors, sort
+  by global token position, and select this CP rank's contiguous interval before
+  the FLA causal convolution and `chunk_gated_delta_rule`.
+- `_adp_cp_redo_load_balancing`: all-gather contiguous GDN outputs, then
+  restore the rank-local head-tail order before Megatron's output projection.
+- `_ADPCPAllGatherConcat`: an autograd-safe all-gather/concat wrapper whose
+  backward all-reduces full gradients and slices the local gradient.
+- A deterministic-mode guard: CP GDN must use FLA's CP recurrent kernel because
+  the torch fallback does not synchronize recurrent state across CP ranks.
+
+A local two-process CPU `gloo` harness verified the bridge permutation and
+backward for the CP=2 layout: rank 0 `[0, 1, 6, 7]` and rank 1 `[2, 3, 4, 5]`
+become contiguous `[0, 1, 2, 3]` / `[4, 5, 6, 7]`, then restore exactly with
+unit gradients.
+
+The padding-only CP rerun completed, but should be treated as a semantically
+weak baseline because it still fed Megatron head-tail chunks to FLA as if they
+were contiguous:
+
+```text
+job: 123876
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke21_align_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke21_align_fa3_12step.sbatch
+parallelism: TP=2, PP=2, EP=2, CP=2, SP=true, GAS=8
+result: COMPLETED
+train_runtime: 869.4s for 12 optimizer steps
+train_samples_per_second: 0.221
+train_steps_per_second: 0.014
+train_loss: 0.7136
+post-burn-in token/sec/GPU: mostly 6.2k-8.7k
+peak sampled memory MiB by local GPU: 79893, 80329, 81047, 80487,
+  79791, 79871, 81025, 80989
+```
+
+The bridged CP rerun completed with the FLA-contiguous/Megatron-head-tail
+layout conversion active:
+
+```text
+job: 123877
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke23_bridge_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke23_bridge_fa3_12step.sbatch
+parallelism: TP=2, PP=2, EP=2, CP=2, SP=true, GAS=8
+result: COMPLETED
+train_runtime: 896.2s for 12 optimizer steps
+train_samples_per_second: 0.214
+train_steps_per_second: 0.013
+train_loss: 0.7086
+post-burn-in token/sec/GPU: mostly 6.3k-7.8k
+peak sampled memory MiB by local GPU: 80453, 80229, 80387, 80507,
+  79931, 80111, 80847, 80809
+```
+
+This establishes a correctness-oriented CP path for Qwen3.5 GDN on the current
+pipeline, but it is not the final long-context scaling solution. The bridge uses
+two full CP all-gathers per GDN layer, so it largely gives up the memory-scaling
+benefit that CP should provide. The kernel-level path for larger contexts is a
+true virtual-chunk FLA CP implementation: treat Megatron's `2 * CP` head-tail
+chunks as virtual CP ranks, exchange only compact conv tails and gated-delta
+state-transition summaries, and compute each physical rank's two chunks without
+materializing a dense full-sequence tensor.
+
 Open MCA memory/speed candidates after the TP2 smoke:
 
-- Finish context-parallel gated-delta attention for Qwen3.5/MCA. The ADP patch
-  now gets past the old construction assertion and can log one CP step, but the
-  remaining blockers are MCA CP input padding/slicing and very poor first-step
-  throughput. The closest upstream template remains
-  `megatron/core/ssm/mamba_context_parallel.py`; gated delta still needs
-  careful recurrent-boundary state handling across CP shards.
+- Finish performance-quality context-parallel gated-delta attention for
+  Qwen3.5/MCA. The ADP patch now has a correctness-oriented bridge that reaches
+  12 optimizer steps, but the remaining blocker for larger contexts is avoiding
+  the full CP all-gathers by implementing a virtual head-tail FLA CP context.
+  The closest upstream templates are Megatron's
+  `megatron/core/ssm/mamba_context_parallel.py`, FLA's
+  `fla.ops.cp.context`, and PyTorch's head-tail CP load balancer.
 - If TP2 still OOMs in `l2norm_bwd_kernel`, add a reproducible ADP patch to
   constrain or pre-warm FLA's Triton l2norm backward autotuning, because job
   `123830` failed during autotune/first backward at near-full H100 memory.
