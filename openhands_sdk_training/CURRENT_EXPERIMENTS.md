@@ -495,7 +495,14 @@ Open MCA memory/speed candidates after the TP2 smoke:
   sequence can be split across ranks without hitting the current assertion.
   This is likely the cleanest way to make CP a valid memory-reduction path, but
   it requires changing the Qwen3.5 gated-delta/FLA integration rather than only
-  changing YAML.
+  changing YAML. The current blocker is in Megatron Core, not just
+  LLaMA-Factory: `TransformerConfig` asserts `context_parallel_size == 1` for
+  `experimental_attention_variant: gated_delta_net`, and
+  `megatron/core/ssm/gated_delta_net.py` has a TODO for
+  `GatedDeltaNetContextParallel`. The closest upstream template is
+  `megatron/core/ssm/mamba_context_parallel.py`, but gated delta will need
+  correct propagation of recurrent boundary state across CP shards rather than
+  naive sequence slicing.
 - If TP2 still OOMs in `l2norm_bwd_kernel`, add a reproducible ADP patch to
   constrain or pre-warm FLA's Triton l2norm backward autotuning, because smoke7
   failed during autotune/first backward at near-full H100 memory.
