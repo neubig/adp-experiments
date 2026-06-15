@@ -528,6 +528,34 @@ config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2
 launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke7_fa3_50step.sbatch
 ```
 
+Job `123848` (`smoke7_fa3_50step`) completed:
+
+```text
+state: COMPLETED
+elapsed: 00:19:49
+exit_code: 0:0
+train_runtime: 1091.0s
+train_steps_per_second: 0.046
+train_loss: 0.6538
+```
+
+FA3 is a modest improvement over the matched 50-step baseline, but not a
+fundamental fix:
+
+```text
+50-step FA3 clone: 1091.0s train_runtime, 0.046 steps/s
+50-step FA4 clone: 1131.0s train_runtime, 0.044 steps/s
+50-step base venv: 1136.0s train_runtime, 0.044 steps/s
+```
+
+The FA3 run removed the previous Transformer Engine warning about missing
+flash-attn v3, replacing it with a flash-attn v4 recommendation. Post-warmup
+steps were usually around 14.5-17s with per-step throughput roughly
+16k-19k tokens/sec/GPU. This is worth keeping as the current best MCA
+environment, but the roughly 4% end-to-end speedup means the main remaining
+bottlenecks are still parallelism, communication, and Qwen3.5 gated-delta/FLA
+kernel behavior rather than the FlashAttention package alone.
+
 Open MCA memory/speed candidates after the TP2 smoke:
 
 - Implement context-parallel gated-delta attention for Qwen3.5/MCA so the 32k
@@ -543,8 +571,8 @@ Open MCA memory/speed candidates after the TP2 smoke:
   correct propagation of recurrent boundary state across CP shards rather than
   naive sequence slicing.
 - If TP2 still OOMs in `l2norm_bwd_kernel`, add a reproducible ADP patch to
-  constrain or pre-warm FLA's Triton l2norm backward autotuning, because smoke7
-  failed during autotune/first backward at near-full H100 memory.
+  constrain or pre-warm FLA's Triton l2norm backward autotuning, because job
+  `123830` failed during autotune/first backward at near-full H100 memory.
 - Try a different pipeline split such as PP8/EP2 if tensor parallelism works
   but leaves uneven late-stage memory pressure.
 
