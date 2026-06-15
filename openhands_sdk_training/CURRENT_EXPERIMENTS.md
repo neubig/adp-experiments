@@ -556,6 +556,48 @@ environment, but the roughly 4% end-to-end speedup means the main remaining
 bottlenecks are still parallelism, communication, and Qwen3.5 gated-delta/FLA
 kernel behavior rather than the FlashAttention package alone.
 
+Selective recompute was tested to see whether full-layer activation
+checkpointing could be reduced. Job `123849` (`smoke8_fa3_selective_50step`)
+used the same FA3 TP2/PP4/EP2 geometry but changed:
+
+```yaml
+recompute_granularity: selective
+recompute_method: null
+recompute_modules: core_attn
+recompute_num_layers: null
+```
+
+This failed before logging loss:
+
+```text
+state: FAILED
+elapsed: 00:02:23
+exit_code: 143:0
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.00-1.09 GiB.
+GPU 0/1 had only about 600-655 MiB free with roughly 78.5 GiB in use.
+```
+
+The traceback reached the first forward pass through the MoE path:
+
+```text
+MoELayer.forward
+token_dispatcher.combine_preprocess
+reduce_scatter_to_sequence_parallel_region
+torch.empty_like(input_tensor_list[rank])
+```
+
+Megatron also warned that `core_attn` recompute is usually unnecessary with a
+Transformer Engine fused attention backend. This negative result means the
+current run is not mainly limited by attention activation memory; removing
+full-layer recompute immediately exposes MoE/token-dispatch memory. The next
+selective recompute smoke therefore targets routed MoE internals instead:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke9_fa3_selective_moe_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke9_fa3_selective_moe_50step.sbatch
+recompute_modules: moe,moe_act
+```
+
 Open MCA memory/speed candidates after the TP2 smoke:
 
 - Implement context-parallel gated-delta attention for Qwen3.5/MCA so the 32k
