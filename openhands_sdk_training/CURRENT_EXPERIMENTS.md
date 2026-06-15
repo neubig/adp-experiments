@@ -396,6 +396,28 @@ measurable throughput fix in this small smoke. The peak memory also means that
 disabling full recomputation is not viable in the current TP2/PP4/EP2 layout
 without first reducing activation/model memory elsewhere.
 
+Transformer Engine also warned that FA3/FA4 may improve feature support or
+performance. The normal MCA venv remains on `flash_attn==2.8.3`; an isolated
+hardlink clone `.venv_mca_fa4` was created for the prerelease FA4 test. A
+plain `flash-attn-4[cu13]==4.0.0b11` install downgraded `nvidia-cublas` and
+broke Transformer Engine, and the latest prerelease Cutlass DSL caused
+`flash_attn.cute` import errors. The working import combination for the clone
+is:
+
+```text
+flash-attn-4==4.0.0b11
+nvidia-cutlass-dsl[cu13]==4.4.2
+nvidia-cublas==13.5.1.27  # force-reinstalled with --no-deps for TE runtime
+```
+
+The FA4 smoke keeps the same TP2/PP4/EP2/CP1/GAS8 geometry and points only the
+launcher venv at `.venv_mca_fa4`:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke4_fa4.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke4_fa4.sbatch
+```
+
 Open MCA memory/speed candidates after the TP2 smoke:
 
 - Implement context-parallel gated-delta attention for Qwen3.5/MCA so the 32k
