@@ -253,6 +253,29 @@ lr_scheduler_kwargs:
 This corrected MCA smoke was resubmitted as job `123829` with run name
 `adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke6`.
 
+Job `123829` passed scheduler setup and reached
+`mcore_adapter.trainer: ***** Running training *****`, but failed on the first
+forward pass inside Transformer Engine fused attention:
+
+```text
+RuntimeError: Multiple libcudart libraries found: libcudart.so.12 and libcudart.so.13
+```
+
+The traceback ended in `transformer_engine.pytorch.cpp_extensions.fused_attn`.
+The next smoke keeps `transformer_impl=transformer_engine` for Qwen3.5
+gated-delta attention, but forces the attention backend away from TE fused
+attention via environment variables:
+
+```bash
+export NVTE_FLASH_ATTN=1
+export NVTE_FUSED_ATTN=0
+export NVTE_UNFUSED_ATTN=0
+```
+
+A local `AutoConfig.from_pretrained(...)` probe with these variables reported
+`attention_backend=AttnBackend.flash` and
+`transformer_impl=transformer_engine`. This MCA smoke is labeled `smoke7`.
+
 The first two-node MCA smoke is:
 
 ```text

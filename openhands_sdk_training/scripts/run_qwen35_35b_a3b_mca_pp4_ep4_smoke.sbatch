@@ -21,7 +21,7 @@ VENV_DIR="${CODE_DIR}/.venv_mca"
 MCA_SITE_DIR="${VENV_DIR}/lib/python3.11/site-packages"
 RUN_DIR=/project/flame/gneubig/adp/runs/openhands_sdk_training/full_condenser_24k_all_records_v2_adapted
 CONFIG_YAML="${CODE_DIR}/configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_pp4_ep4_smoke.yaml"
-OUTPUT_DIR="${RUN_DIR}/output_bench_qwen35_35b_a3b_mca_pp4_ep4_seq32768_smoke6"
+OUTPUT_DIR="${RUN_DIR}/output_bench_qwen35_35b_a3b_mca_pp4_ep4_seq32768_smoke7"
 LOG_DIR="${RUN_DIR}/logs"
 GPU_LOG="${LOG_DIR}/gpu_monitor_qwen35_35b_a3b_mca_pp4_ep4_smoke_${SLURM_JOB_ID}.log"
 
@@ -31,6 +31,9 @@ cd "${CODE_DIR}"
 export MCA_PYTHON="${VENV_DIR}/bin/python"
 export PATH="${CODE_DIR}/scripts/mca_bin:${PATH}"
 export LD_LIBRARY_PATH="${MCA_SITE_DIR}/nvidia/cu13/lib:${MCA_SITE_DIR}/nvidia/cudnn/lib:${MCA_SITE_DIR}/nvidia/nccl/lib:${LD_LIBRARY_PATH:-}"
+export NVTE_FLASH_ATTN=1
+export NVTE_FUSED_ATTN=0
+export NVTE_UNFUSED_ATTN=0
 "${MCA_PYTHON}" "${CODE_DIR}/scripts/patch_llamafactory_liger_eval_skip_logits.py"
 
 export HF_HOME=${HF_HOME:-/project/flame/gneubig/adp/cache/hf}
@@ -39,7 +42,7 @@ export HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE:-${HF_HOME}/hub}
 export TOKENIZERS_PARALLELISM=false
 export WANDB_ENTITY=${WANDB_ENTITY:-gneubig}
 export WANDB_PROJECT=${WANDB_PROJECT:-adp-experiments}
-export WANDB_NAME=${WANDB_NAME:-adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke6}
+export WANDB_NAME=${WANDB_NAME:-adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke7}
 export WANDB_DIR=${WANDB_DIR:-${RUN_DIR}/wandb}
 export WANDB_CACHE_DIR=${WANDB_CACHE_DIR:-${RUN_DIR}/wandb_cache}
 export WANDB_ARTIFACT_DIR=${WANDB_ARTIFACT_DIR:-${RUN_DIR}/wandb_artifacts}
@@ -115,6 +118,9 @@ srun --nodes="${SLURM_NNODES}" --ntasks="${SLURM_NNODES}" --ntasks-per-node=1 --
   export MCA_PYTHON="${VENV_DIR}/bin/python"
   export PATH="${CODE_DIR}/scripts/mca_bin:${PATH}"
   export LD_LIBRARY_PATH="${MCA_SITE_DIR}/nvidia/cu13/lib:${MCA_SITE_DIR}/nvidia/cudnn/lib:${MCA_SITE_DIR}/nvidia/nccl/lib:${LD_LIBRARY_PATH:-}"
+  export NVTE_FLASH_ATTN=1
+  export NVTE_FUSED_ATTN=0
+  export NVTE_UNFUSED_ATTN=0
   export NNODES="${NNODES}"
   export NPROC_PER_NODE="${NPROC_PER_NODE}"
   export NODE_RANK="${SLURM_NODEID}"
