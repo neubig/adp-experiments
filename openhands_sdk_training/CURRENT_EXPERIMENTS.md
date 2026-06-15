@@ -688,6 +688,25 @@ launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp8_ep1_smoke12_fa3_50step.sbatch
 parallelism: TP=2, PP=8, EP=1, CP=1, GAS=16
 ```
 
+Job `123859` (`smoke12_fa3_tp2_pp8_ep1_50step`) failed on a runtime guard
+before logging loss:
+
+```text
+state: FAILED
+elapsed: 00:02:07
+exit_code: 143:0
+ValueError: During training, performance may degrade if MoE and tensor
+parallelism are enabled without also enabling sequence parallelism.
+```
+
+The fix is to keep the same split but explicitly enable sequence parallelism:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp8_ep1_sp_smoke13_fa3_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp8_ep1_sp_smoke13_fa3_50step.sbatch
+parallelism: TP=2, PP=8, EP=1, CP=1, SP=true, GAS=16
+```
+
 Open MCA memory/speed candidates after the TP2 smoke:
 
 - Implement context-parallel gated-delta attention for Qwen3.5/MCA so the 32k
