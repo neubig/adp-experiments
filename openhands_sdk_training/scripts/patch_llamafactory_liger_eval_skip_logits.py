@@ -25,11 +25,23 @@ model-only checkpoint when the model is already loaded from that checkpoint.
 This preserves Trainer's data skipping via ``resume_from_checkpoint`` even when
 the previous run used ``save_only_model: true`` and therefore did not write
 DeepSpeed optimizer/scheduler state.
+
+For MCA tensor/context-parallel runs, it also rounds the per-step padded
+sequence length up to a safe TP/CP multiple. Megatron sequence parallel uses
+reduce-scatter along the sequence dimension, and Megatron CP reshapes the input
+into `2 * context_parallel_size` chunks before selecting the two local chunks.
+Without this, TP/CP runs can fail on any gradient-accumulation group whose local
+max sequence length is not divisible by the combined layout.
+
+For Qwen3.5 full-attention layers with fewer KV groups than TP ranks, it mirrors
+Megatron's query sub-slice onto the output gate. Without this, TP4+ runs keep a
+full gathered gate tensor while the attention output is already rank-local.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import math
 import pathlib
 import sys
 
@@ -43,6 +55,28 @@ DS_MODEL_ONLY_SCHEDULER_PATCH_MARKER = (
 SKIP_FINAL_SAVE_PATCH_MARKER = "# ADP patch: optionally skip benchmark final save."
 SKIP_FINAL_PLOT_PATCH_MARKER = "# ADP patch: skip loss plotting when benchmark state is skipped."
 FUSED_MOE_LIGER_EXPERTS_PATCH_MARKER = "# ADP patch: cuda_fused_moe recognizes LigerExperts."
+MCA_SKIP_FINAL_SAVE_PATCH_MARKER = "# ADP patch: optionally skip MCA benchmark final save."
+MCA_SKIP_FINAL_PLOT_PATCH_MARKER = "# ADP patch: skip MCA loss plotting when benchmark state is skipped."
+MCA_QWEN35_LINEAR_CONFIG_PATCH_MARKER = "# ADP patch: accept Qwen3.5 linear-attention config fields."
+MCA_TP_SEQ_LENGTH_PATCH_MARKER = "# ADP patch: round MCA step sequence length for tensor/context parallelism."
+MCA_QWEN35_TP_OUTPUT_GATE_PATCH_MARKER = "# ADP patch: slice Qwen3.5 output gate for KV-heads < TP."
+MCA_CONTIGUOUS_CP_BATCH_PATCH_MARKER = "# ADP patch: optional contiguous CP batch slicing for FLA GDN."
+MCA_QWEN35_CONTIGUOUS_CP_IMPORT_PATCH_MARKER = "# ADP patch: import os for optional contiguous CP mode."
+MCA_QWEN35_CONTIGUOUS_CP_RANGE_PATCH_MARKER = "# ADP patch: optional contiguous CP input ranges."
+MCA_GDN_CP_IMPORT_PATCH_MARKER = "# ADP patch: import FLA context-parallel GDN helpers."
+MCA_GDN_CP_INIT_PATCH_MARKER = "# ADP patch: record GDN context-parallel process group."
+MCA_GDN_CP_FORWARD_PATCH_MARKER = "# ADP patch: pass FLA context-parallel metadata through GDN."
+MCA_GDN_CP_CONV_PATCH_MARKER = "# ADP patch: use FLA context-parallel causal convolution in GDN."
+MCA_GDN_CP_RULE_PATCH_MARKER = "# ADP patch: use FLA context-parallel gated-delta rule in GDN."
+MCA_GDN_CP_CONFIG_PATCH_MARKER = "# ADP patch: allow experimental GDN context parallelism."
+MCA_GDN_CP_DIST_IMPORT_PATCH_MARKER = "# ADP patch: import distributed helpers for GDN CP layout bridge."
+MCA_GDN_CP_LAYOUT_HELPERS_PATCH_MARKER = "# ADP patch: load-balanced CP layout bridge for GDN."
+MCA_GDN_CP_UNDO_LAYOUT_PATCH_MARKER = "# ADP patch: convert load-balanced CP layout to contiguous GDN chunks."
+MCA_GDN_CP_REDO_LAYOUT_PATCH_MARKER = "# ADP patch: restore load-balanced CP layout after GDN."
+MCA_GDN_CP_DETERMINISTIC_GUARD_PATCH_MARKER = "# ADP patch: disallow deterministic fallback for GDN CP."
+MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_PATCH_MARKER = "# ADP patch: exchange CP virtual chunks without full all-gather."
+MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_PATCH_MARKER = "# ADP patch: exchange head-tail CP chunks into contiguous GDN layout."
+MCA_GDN_CP_CHUNK_EXCHANGE_REDO_PATCH_MARKER = "# ADP patch: exchange contiguous GDN chunks back to head-tail CP layout."
 OLD = """        loss, generated_tokens, _ = super().prediction_step(
             model, inputs, prediction_loss_only=prediction_loss_only, ignore_keys=ignore_keys, **gen_kwargs
         )
@@ -164,6 +198,57 @@ SKIP_FINAL_PLOT_NEW = f"""        if (
             and not adp_skip_final_save  {SKIP_FINAL_PLOT_PATCH_MARKER}
         ):
 """
+MCA_SKIP_FINAL_SAVE_OLD = """    train_result = trainer.train(training_args.resume_from_checkpoint)
+    trainer.save_model()
+    trainer.log_metrics("train", train_result.metrics)
+    trainer.save_metrics("train", train_result.metrics)
+    trainer.save_state()
+"""
+MCA_SKIP_FINAL_SAVE_NEW = f"""    train_result = trainer.train(training_args.resume_from_checkpoint)
+    adp_skip_final_save = __import__("os").environ.get("ADP_LF_SKIP_FINAL_SAVE", "").lower() in {{
+        "1",
+        "true",
+        "yes",
+    }}
+    if adp_skip_final_save:
+        {MCA_SKIP_FINAL_SAVE_PATCH_MARKER}
+        logger.warning("ADP_LF_SKIP_FINAL_SAVE=1: skipping final MCA save_model/save_state for benchmark run.")
+    else:
+        trainer.save_model()
+
+    trainer.log_metrics("train", train_result.metrics)
+    trainer.save_metrics("train", train_result.metrics)
+    if not adp_skip_final_save:
+        trainer.save_state()
+"""
+MCA_SKIP_FINAL_PLOT_OLD = """    if trainer.is_world_process_zero() and finetuning_args.plot_loss:
+"""
+MCA_SKIP_FINAL_PLOT_NEW = f"""    if (
+        trainer.is_world_process_zero()
+        and finetuning_args.plot_loss
+        and not adp_skip_final_save  {MCA_SKIP_FINAL_PLOT_PATCH_MARKER}
+    ):
+"""
+MCA_QWEN35_LINEAR_CONFIG_OLD = """    # Gated Delta Net specific (for linear attention layers)
+    layer_types: Optional[list[str]] = None
+
+    # Vision specific
+"""
+MCA_QWEN35_LINEAR_CONFIG_NEW = f"""    # Gated Delta Net specific (for linear attention layers)
+    layer_types: Optional[list[str]] = None
+    linear_conv_kernel_dim: int = 4
+    linear_key_head_dim: int = 128
+    linear_value_head_dim: int = 128
+    linear_num_key_heads: int = 16
+    linear_num_value_heads: int = 32
+    linear_attention_freq: int = 4
+    attention_output_gate: bool = True
+    experimental_attention_variant: Optional[str] = None
+    moe_shared_expert_gate: bool = True
+    {MCA_QWEN35_LINEAR_CONFIG_PATCH_MARKER}
+
+    # Vision specific
+"""
 FUSED_MOE_LIGER_EXPERTS_OLD = """    "Qwen3_5MoeForCausalLM": {
         "Qwen3_5MoeExperts": _triton_moe_experts_forward,
     },
@@ -180,6 +265,822 @@ FUSED_MOE_LIGER_EXPERTS_NEW = f"""    "Qwen3_5MoeForCausalLM": {{
         "LigerExperts": _triton_moe_experts_forward,
     }},
 """
+MCA_TP_SEQ_LENGTH_OLD = """        if len(step_inputs) < self.args.gradient_accumulation_steps:
+            return None, 0, 0
+
+        if not self.args.allow_variable_seq_lengths():
+            step_inputs = [self._pad_batched_inputs(inputs, max_seq_length) for inputs in step_inputs]
+"""
+MCA_TP_SEQ_LENGTH_NEW = f"""        if len(step_inputs) < self.args.gradient_accumulation_steps:
+            return None, 0, 0
+
+        tensor_parallel_size = getattr(self.args, "tensor_model_parallel_size", 1) or 1
+        context_parallel_size = getattr(self.args, "context_parallel_size", 1) or 1
+        alignment = tensor_parallel_size
+        if context_parallel_size > 1:
+            cp_view_alignment = 2 * context_parallel_size
+            sp_alignment = tensor_parallel_size * context_parallel_size
+            alignment = math.lcm(alignment, cp_view_alignment, sp_alignment)
+        if alignment > 1 and not self.args.allow_variable_seq_lengths():
+            remainder = max_seq_length % alignment
+            if remainder:
+                {MCA_TP_SEQ_LENGTH_PATCH_MARKER}
+                max_seq_length += alignment - remainder
+
+        if not self.args.allow_variable_seq_lengths():
+            step_inputs = [self._pad_batched_inputs(inputs, max_seq_length) for inputs in step_inputs]
+"""
+MCA_TP_SEQ_LENGTH_TP_ONLY_OLD = """        if len(step_inputs) < self.args.gradient_accumulation_steps:
+            return None, 0, 0
+
+        tensor_parallel_size = getattr(self.args, "tensor_model_parallel_size", 1) or 1
+        if tensor_parallel_size > 1 and not self.args.allow_variable_seq_lengths():
+            remainder = max_seq_length % tensor_parallel_size
+            if remainder:
+                # ADP patch: round MCA step sequence length for tensor parallelism.
+                max_seq_length += tensor_parallel_size - remainder
+
+        if not self.args.allow_variable_seq_lengths():
+            step_inputs = [self._pad_batched_inputs(inputs, max_seq_length) for inputs in step_inputs]
+"""
+MCA_QWEN35_TP_OUTPUT_GATE_OLD = """        if output_gate:
+            # Gate [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
+            gate = gate.reshape(*gate.shape[:2], -1, self.hidden_size_per_attention_head)
+            return query, key, value, gate
+"""
+MCA_QWEN35_TP_OUTPUT_GATE_NEW = f"""        if output_gate:
+            # Gate [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
+            gate = gate.reshape(*gate.shape[:2], -1, self.hidden_size_per_attention_head)
+            if self.config.num_query_groups < self.world_size:
+                # Mirror the query sub-slice above when TP exceeds the number
+                # of KV groups. Without this, TP4+ Qwen3.5 attention keeps the
+                # full gathered gate while core_attn_out is rank-local.
+                idx = get_tensor_model_parallel_rank() % (
+                    self.world_size // self.config.num_query_groups
+                )
+                size = self.num_attention_heads_per_partition // (
+                    self.world_size // self.config.num_query_groups
+                )
+                gate = gate[:, :, idx * size : (idx + 1) * size, :]
+                {MCA_QWEN35_TP_OUTPUT_GATE_PATCH_MARKER}
+            return query, key, value, gate
+"""
+MCA_CONTIGUOUS_CP_BATCH_OLD = """            cp_rank = mpu.get_context_parallel_rank()
+            for key, val in batch.items():
+"""
+MCA_CONTIGUOUS_CP_BATCH_NEW = f"""            cp_rank = mpu.get_context_parallel_rank()
+            if os.environ.get("ADP_MCA_CONTIGUOUS_CP", "").lower() in {{"1", "true", "yes"}}:
+                {MCA_CONTIGUOUS_CP_BATCH_PATCH_MARKER}
+                for key, val in batch.items():
+                    if val is not None and isinstance(val, torch.Tensor):
+                        seq_dim = 2 if key in dim3_keys else 1
+                        local_seq_len = val.shape[seq_dim] // cp_size
+                        val = val.narrow(seq_dim, cp_rank * local_seq_len, local_seq_len).contiguous()
+                        batch[key] = val
+                return batch
+
+            for key, val in batch.items():
+"""
+MCA_QWEN35_CONTIGUOUS_CP_IMPORT_OLD = """import heapq
+import itertools
+from typing import Optional
+"""
+MCA_QWEN35_CONTIGUOUS_CP_IMPORT_NEW = f"""import heapq
+import itertools
+import os
+from typing import Optional
+
+{MCA_QWEN35_CONTIGUOUS_CP_IMPORT_PATCH_MARKER}
+"""
+MCA_QWEN35_CONTIGUOUS_CP_RANGE_OLD = """        if self.config.context_parallel_size <= 1:
+            return [list(get_sequence_range(0, total_seqlen, slice_rank, slice_size))]
+        cp_rank = mpu.get_context_parallel_rank()
+        cp_size = mpu.get_context_parallel_world_size()
+        left_start = (total_seqlen // cp_size // 2) * cp_rank
+"""
+MCA_QWEN35_CONTIGUOUS_CP_RANGE_NEW = f"""        if self.config.context_parallel_size <= 1:
+            return [list(get_sequence_range(0, total_seqlen, slice_rank, slice_size))]
+        cp_rank = mpu.get_context_parallel_rank()
+        cp_size = mpu.get_context_parallel_world_size()
+        if os.environ.get("ADP_MCA_CONTIGUOUS_CP", "").lower() in {{"1", "true", "yes"}}:
+            {MCA_QWEN35_CONTIGUOUS_CP_RANGE_PATCH_MARKER}
+            cp_start, cp_end = get_sequence_range(0, total_seqlen, cp_rank, cp_size)
+            return [list(get_sequence_range(cp_start, cp_end, slice_rank, slice_size))]
+        left_start = (total_seqlen // cp_size // 2) * cp_rank
+"""
+MCA_GDN_CP_IMPORT_OLD = """try:
+    from fla.modules.l2norm import l2norm
+    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+
+    HAVE_FLA = True
+except ImportError:
+    chunk_gated_delta_rule = None
+
+    HAVE_FLA = False
+"""
+MCA_GDN_CP_IMPORT_NEW = f"""try:
+    from fla.modules.conv.causal_conv1d import causal_conv1d as fla_causal_conv1d
+    from fla.modules.l2norm import l2norm
+    from fla.ops.cp import build_cp_context
+    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+
+    {MCA_GDN_CP_IMPORT_PATCH_MARKER}
+    HAVE_FLA = True
+except ImportError:
+    build_cp_context = None
+    chunk_gated_delta_rule = None
+    fla_causal_conv1d = None
+
+    HAVE_FLA = False
+"""
+MCA_GDN_CP_INIT_OLD = """        # TODO: support CP
+
+        self.reset_parameters()
+"""
+MCA_GDN_CP_INIT_NEW = f"""        self.cp_group = getattr(self.pg_collection, "cp", None)
+        self.cp_size = self.cp_group.size() if self.cp_group is not None else 1
+        {MCA_GDN_CP_INIT_PATCH_MARKER}
+
+        self.reset_parameters()
+"""
+MCA_GDN_CP_FORWARD_OLD = """        seq_len, batch, _ = hidden_states.shape
+        seq_len = seq_len * self.sp_size
+
+        if inference_context is not None:
+"""
+MCA_GDN_CP_FORWARD_NEW = f"""        seq_len, batch, _ = hidden_states.shape
+        seq_len = seq_len * self.sp_size
+
+        cp_context = None
+        if self.cp_size > 1:
+            if batch != 1:
+                raise NotImplementedError(
+                    "ADP experimental GDN context parallelism currently expects microbatch size 1."
+                )
+            global_seq_len = seq_len * self.cp_size
+            cu_seqlens_cpu = torch.tensor([0, global_seq_len], dtype=torch.long)
+            cu_seqlens = cu_seqlens_cpu.to(device=hidden_states.device, non_blocking=True)
+            {MCA_GDN_CP_FORWARD_PATCH_MARKER}
+            cp_context = build_cp_context(
+                cu_seqlens=cu_seqlens,
+                group=self.cp_group,
+                conv1d_kernel_size=self.conv_kernel_dim,
+                cu_seqlens_cpu=cu_seqlens_cpu,
+            )
+
+        if inference_context is not None:
+"""
+MCA_GDN_CP_CONV_OLD = """        if (causal_conv1d_fn is None) or self.config.deterministic_mode:
+            qkv = self.act_fn(self.conv1d(qkv)[..., :seq_len])
+        else:
+            assert self.activation in ["silu", "swish"]
+            qkv = causal_conv1d_fn(
+                x=qkv,
+                weight=self.conv1d.weight.squeeze(1),  # d, 1, w -> d, w
+                bias=self.conv1d.bias,
+                activation=self.activation,
+            )
+"""
+MCA_GDN_CP_CONV_NEW = """        if cp_context is not None:
+            assert self.activation in ["silu", "swish"]
+            # ADP patch: use FLA context-parallel causal convolution in GDN.
+            qkv, _ = fla_causal_conv1d(
+                x=qkv.transpose(1, 2).contiguous(),
+                weight=self.conv1d.weight.squeeze(1),  # d, 1, w -> d, w
+                bias=self.conv1d.bias,
+                activation=self.activation,
+                cp_context=cp_context,
+            )
+            qkv = qkv.transpose(1, 2).contiguous()
+        elif (causal_conv1d_fn is None) or self.config.deterministic_mode:
+            qkv = self.act_fn(self.conv1d(qkv)[..., :seq_len])
+        else:
+            assert self.activation in ["silu", "swish"]
+            qkv = causal_conv1d_fn(
+                x=qkv,
+                weight=self.conv1d.weight.squeeze(1),  # d, 1, w -> d, w
+                bias=self.conv1d.bias,
+                activation=self.activation,
+            )
+"""
+MCA_GDN_CP_RULE_OLD = """            core_attn_out, last_recurrent_state = chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                initial_state=None,
+                output_final_state=False,
+                use_qk_l2norm_in_kernel=False,
+            )
+"""
+MCA_GDN_CP_RULE_NEW = """            core_attn_out, last_recurrent_state = chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                initial_state=None,
+                output_final_state=False,
+                use_qk_l2norm_in_kernel=False,
+                # ADP patch: use FLA context-parallel gated-delta rule in GDN.
+                cp_context=cp_context,
+            )
+"""
+MCA_GDN_CP_CONFIG_OLD = """            # Do not support yet, but coming soon.
+            assert self.context_parallel_size == 1, (
+                f"Gated delta net does not support context parallel for now,"
+                f" but got {self.context_parallel_size=}."
+            )
+
+        if self.fp8:
+"""
+MCA_GDN_CP_CONFIG_NEW = f"""            if self.context_parallel_size != 1:
+                {MCA_GDN_CP_CONFIG_PATCH_MARKER}
+                warnings.warn(
+                    "ADP experimental patch enables GatedDeltaNet context parallelism via "
+                    "FLA operator-level CP. This path has only been smoke-tested for "
+                    "microbatch size 1."
+                )
+
+        if self.fp8:
+"""
+MCA_GDN_CP_DIST_IMPORT_OLD = """import torch
+import torch.nn as nn
+"""
+MCA_GDN_CP_DIST_IMPORT_NEW = f"""import os
+
+import torch
+import torch.distributed as dist
+import torch.nn as nn
+
+{MCA_GDN_CP_DIST_IMPORT_PATCH_MARKER}
+"""
+MCA_GDN_CP_LAYOUT_HELPERS_OLD = """logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GatedDeltaNetSubmodules:
+"""
+MCA_GDN_CP_LAYOUT_HELPERS_NEW = f"""logger = logging.getLogger(__name__)
+
+
+def _adp_env_flag(name: str) -> bool:
+    return os.environ.get(name, "").lower() in {{"1", "true", "yes"}}
+
+
+class _ADPCPAllGatherConcat(torch.autograd.Function):
+    \"\"\"Autograd-safe all-gather/concat over a CP group.\"\"\"
+
+    @staticmethod
+    def forward(ctx, local_tensor: torch.Tensor, group: dist.ProcessGroup, dim: int):
+        dim = dim if dim >= 0 else local_tensor.ndim + dim
+        world_size = dist.get_world_size(group)
+        gathered = [torch.empty_like(local_tensor) for _ in range(world_size)]
+        dist.all_gather(gathered, local_tensor.contiguous(), group=group)
+        ctx.group = group
+        ctx.rank = dist.get_rank(group)
+        ctx.dim = dim
+        ctx.local_dim_size = local_tensor.size(dim)
+        return torch.cat(gathered, dim=dim)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        grad_full = grad_output.contiguous()
+        dist.all_reduce(grad_full, op=dist.ReduceOp.SUM, group=ctx.group)
+        start = ctx.rank * ctx.local_dim_size
+        grad_local = grad_full.narrow(ctx.dim, start, ctx.local_dim_size).contiguous()
+        return grad_local, None, None
+
+
+def _adp_cp_all_gather_concat(
+    tensor: torch.Tensor,
+    group: dist.ProcessGroup,
+    *,
+    dim: int,
+    differentiable: bool,
+) -> torch.Tensor:
+    if differentiable:
+        return _ADPCPAllGatherConcat.apply(tensor, group, dim)
+
+    world_size = dist.get_world_size(group)
+    gathered = [torch.empty_like(tensor) for _ in range(world_size)]
+    dist.all_gather(gathered, tensor.contiguous(), group=group)
+    return torch.cat(gathered, dim=dim)
+
+
+def _adp_cp_local_positions(seq_len: int, group: dist.ProcessGroup, device: torch.device) -> torch.Tensor:
+    cp_rank = dist.get_rank(group)
+    cp_size = dist.get_world_size(group)
+
+    if _adp_env_flag("ADP_MCA_CONTIGUOUS_CP"):
+        start = cp_rank * seq_len
+        return torch.arange(start, start + seq_len, device=device, dtype=torch.long)
+
+    if seq_len % 2 != 0:
+        raise RuntimeError(
+            "Megatron load-balanced CP gives each rank two equal chunks, so the "
+            f"rank-local sequence length must be even. Got {{seq_len}}."
+        )
+
+    chunk_len = seq_len // 2
+    left_start = cp_rank * chunk_len
+    right_start = (2 * cp_size - cp_rank - 1) * chunk_len
+    left = torch.arange(left_start, left_start + chunk_len, device=device, dtype=torch.long)
+    right = torch.arange(right_start, right_start + chunk_len, device=device, dtype=torch.long)
+    return torch.cat((left, right), dim=0)
+
+
+def _adp_cp_undo_load_balancing(
+    tensor: torch.Tensor,
+    local_positions: torch.Tensor,
+    group: dist.ProcessGroup,
+    *,
+    dim: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    cp_rank = dist.get_rank(group)
+    local_seq_len = tensor.size(dim)
+    cp_order_tensor = _adp_cp_all_gather_concat(tensor, group, dim=dim, differentiable=True)
+    cp_order_positions = _adp_cp_all_gather_concat(
+        local_positions, group, dim=0, differentiable=False
+    )
+    sort_order = torch.argsort(cp_order_positions)
+    sorted_positions = cp_order_positions.index_select(0, sort_order)
+    expected_positions = torch.arange(
+        sorted_positions.numel(), device=sorted_positions.device, dtype=sorted_positions.dtype
+    )
+    if not torch.equal(sorted_positions, expected_positions):
+        raise RuntimeError(
+            "GDN CP layout bridge requires dense global token positions covering 0..S-1."
+        )
+
+    full_tensor = cp_order_tensor.index_select(dim, sort_order)
+    start = cp_rank * local_seq_len
+    return full_tensor.narrow(dim, start, local_seq_len).contiguous(), sorted_positions
+
+
+def _adp_cp_redo_load_balancing(
+    tensor: torch.Tensor,
+    local_positions: torch.Tensor,
+    sorted_positions: torch.Tensor,
+    group: dist.ProcessGroup,
+    *,
+    dim: int,
+) -> torch.Tensor:
+    full_tensor = _adp_cp_all_gather_concat(tensor, group, dim=dim, differentiable=True)
+    restore_indices = torch.searchsorted(sorted_positions, local_positions)
+    restored_positions = sorted_positions.index_select(0, restore_indices)
+    if not torch.equal(restored_positions, local_positions):
+        raise RuntimeError("Failed to restore GDN output to Megatron load-balanced CP layout.")
+    return full_tensor.index_select(dim, restore_indices).contiguous()
+
+
+class _ADPCPChunkExchange(torch.autograd.Function):
+    \"\"\"Autograd-safe CP chunk all-to-all for Megatron head-tail layout.\"\"\"
+
+    @staticmethod
+    def forward(
+        ctx,
+        tensor: torch.Tensor,
+        group: dist.ProcessGroup,
+        dim: int,
+        to_contiguous: bool,
+    ):
+        ctx.group = group
+        ctx.dim = dim
+        ctx.to_contiguous = to_contiguous
+        return _adp_cp_exchange_virtual_chunks(
+            tensor, group, dim=dim, to_contiguous=to_contiguous
+        )
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        grad_input = _adp_cp_exchange_virtual_chunks(
+            grad_output.contiguous(),
+            ctx.group,
+            dim=ctx.dim,
+            to_contiguous=not ctx.to_contiguous,
+        )
+        return grad_input, None, None, None
+
+
+def _adp_cp_exchange_virtual_chunks(
+    tensor: torch.Tensor,
+    group: dist.ProcessGroup,
+    *,
+    dim: int,
+    to_contiguous: bool,
+) -> torch.Tensor:
+    cp_size = dist.get_world_size(group)
+    if cp_size <= 1 or _adp_env_flag("ADP_MCA_CONTIGUOUS_CP"):
+        return tensor.contiguous()
+
+    cp_rank = dist.get_rank(group)
+    dim = dim if dim >= 0 else tensor.ndim + dim
+    x = tensor.movedim(dim, 0).contiguous()
+    local_seq_len = x.shape[0]
+    if local_seq_len % 2 != 0:
+        raise RuntimeError(
+            "Megatron head-tail CP chunk exchange requires an even local sequence "
+            f"length, got {{local_seq_len}}."
+        )
+
+    chunk_len = local_seq_len // 2
+    local_chunks = [x.narrow(0, 0, chunk_len), x.narrow(0, chunk_len, chunk_len)]
+
+    def owner_rank(virtual_chunk: int) -> int:
+        if virtual_chunk < cp_size:
+            return virtual_chunk
+        return 2 * cp_size - virtual_chunk - 1
+
+    def contiguous_rank(virtual_chunk: int) -> int:
+        return virtual_chunk // 2
+
+    if to_contiguous:
+        local_virtual_chunks = [cp_rank, 2 * cp_size - cp_rank - 1]
+        target_virtual_chunks = [2 * cp_rank, 2 * cp_rank + 1]
+        destination_rank = contiguous_rank
+    else:
+        local_virtual_chunks = [2 * cp_rank, 2 * cp_rank + 1]
+        target_virtual_chunks = [cp_rank, 2 * cp_size - cp_rank - 1]
+        destination_rank = owner_rank
+
+    send_parts = []
+    input_split_sizes: list[int] = []
+    for destination in range(cp_size):
+        matching_indices = [
+            idx
+            for idx, virtual_chunk in enumerate(local_virtual_chunks)
+            if destination_rank(virtual_chunk) == destination
+        ]
+        if len(matching_indices) > 1:
+            raise RuntimeError(
+                "Unexpected CP virtual-chunk routing: more than one local chunk "
+                f"targets rank {{destination}}."
+            )
+        if matching_indices:
+            send_parts.append(local_chunks[matching_indices[0]])
+            input_split_sizes.append(chunk_len)
+        else:
+            input_split_sizes.append(0)
+
+    if send_parts:
+        send_tensor = torch.cat(send_parts, dim=0).contiguous()
+    else:
+        send_tensor = x.new_empty((0, *x.shape[1:]))
+
+    output_split_sizes: list[int] = []
+    incoming_virtual_chunks: list[int | None] = []
+    for source in range(cp_size):
+        source_virtual_chunks = (
+            [source, 2 * cp_size - source - 1]
+            if to_contiguous
+            else [2 * source, 2 * source + 1]
+        )
+        incoming = [
+            virtual_chunk
+            for virtual_chunk in source_virtual_chunks
+            if destination_rank(virtual_chunk) == cp_rank
+        ]
+        if len(incoming) > 1:
+            raise RuntimeError(
+                "Unexpected CP virtual-chunk routing: more than one chunk from "
+                f"rank {{source}} targets rank {{cp_rank}}."
+            )
+        if incoming:
+            output_split_sizes.append(chunk_len)
+            incoming_virtual_chunks.append(incoming[0])
+        else:
+            output_split_sizes.append(0)
+            incoming_virtual_chunks.append(None)
+
+    recv_tensor = x.new_empty((sum(output_split_sizes), *x.shape[1:]))
+    dist.all_to_all_single(
+        recv_tensor,
+        send_tensor,
+        output_split_sizes=output_split_sizes,
+        input_split_sizes=input_split_sizes,
+        group=group,
+    )
+
+    chunks_by_virtual: dict[int, torch.Tensor] = {{}}
+    offset = 0
+    for size, virtual_chunk in zip(output_split_sizes, incoming_virtual_chunks):
+        if size:
+            chunks_by_virtual[virtual_chunk] = recv_tensor.narrow(0, offset, size)
+            offset += size
+
+    try:
+        ordered = torch.cat([chunks_by_virtual[chunk] for chunk in target_virtual_chunks], dim=0)
+    except KeyError as exc:
+        raise RuntimeError(
+            f"Missing CP virtual chunk {{exc.args[0]}} after all-to-all exchange."
+        ) from exc
+
+    return ordered.movedim(0, dim).contiguous()
+
+
+def _adp_cp_head_tail_to_contiguous(
+    tensor: torch.Tensor, group: dist.ProcessGroup, *, dim: int
+) -> torch.Tensor:
+    return _ADPCPChunkExchange.apply(tensor, group, dim, True)
+
+
+def _adp_cp_contiguous_to_head_tail(
+    tensor: torch.Tensor, group: dist.ProcessGroup, *, dim: int
+) -> torch.Tensor:
+    return _ADPCPChunkExchange.apply(tensor, group, dim, False)
+
+
+{MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_PATCH_MARKER}
+
+
+{MCA_GDN_CP_LAYOUT_HELPERS_PATCH_MARKER}
+
+
+@dataclass
+class GatedDeltaNetSubmodules:
+"""
+MCA_GDN_CP_UNDO_LAYOUT_OLD = """        # Transpose: s b x --> b s x
+        # From sbhd to bshd format
+        qkvzba = qkvzba.transpose(0, 1)
+
+        # Split, reorder, and reshape the tensor into q, k, v, gate, beta, alpha
+"""
+MCA_GDN_CP_UNDO_LAYOUT_NEW = f"""        # Transpose: s b x --> b s x
+        # From sbhd to bshd format
+        qkvzba = qkvzba.transpose(0, 1)
+
+        original_cp_positions = None
+        sorted_cp_positions = None
+        use_full_gather_cp_bridge = _adp_env_flag("ADP_MCA_GDN_CP_FULL_GATHER_BRIDGE")
+        if cp_context is not None:
+            if qkvzba.shape[1] != seq_len:
+                raise RuntimeError(
+                    "Unexpected GDN sequence shape after input projection: "
+                    f"got {{qkvzba.shape[1]}}, expected {{seq_len}}."
+                )
+            if use_full_gather_cp_bridge:
+                original_cp_positions = _adp_cp_local_positions(seq_len, self.cp_group, qkvzba.device)
+                qkvzba, sorted_cp_positions = _adp_cp_undo_load_balancing(
+                    qkvzba, original_cp_positions, self.cp_group, dim=1
+                )
+            else:
+                qkvzba = _adp_cp_head_tail_to_contiguous(qkvzba, self.cp_group, dim=1)
+                {MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_PATCH_MARKER}
+            {MCA_GDN_CP_UNDO_LAYOUT_PATCH_MARKER}
+
+        # Split, reorder, and reshape the tensor into q, k, v, gate, beta, alpha
+"""
+MCA_GDN_CP_REDO_LAYOUT_OLD = """        norm_out = norm_out.reshape(batch, seq_len, -1)
+        norm_out = norm_out.transpose(0, 1).contiguous()
+"""
+MCA_GDN_CP_REDO_LAYOUT_NEW = f"""        norm_out = norm_out.reshape(batch, seq_len, -1)
+        if cp_context is not None:
+            if use_full_gather_cp_bridge:
+                norm_out = _adp_cp_redo_load_balancing(
+                    norm_out, original_cp_positions, sorted_cp_positions, self.cp_group, dim=1
+                )
+            else:
+                norm_out = _adp_cp_contiguous_to_head_tail(norm_out, self.cp_group, dim=1)
+                {MCA_GDN_CP_CHUNK_EXCHANGE_REDO_PATCH_MARKER}
+            {MCA_GDN_CP_REDO_LAYOUT_PATCH_MARKER}
+        norm_out = norm_out.transpose(0, 1).contiguous()
+"""
+MCA_GDN_CP_DETERMINISTIC_GUARD_OLD = """        if packed_seq_params is not None:
+            # TODO: support packed sequence
+            raise NotImplementedError("GDN does not support packed sequence for now.")
+
+        # Input projection
+"""
+MCA_GDN_CP_DETERMINISTIC_GUARD_NEW = f"""        if packed_seq_params is not None:
+            # TODO: support packed sequence
+            raise NotImplementedError("GDN does not support packed sequence for now.")
+
+        if cp_context is not None and self.config.deterministic_mode:
+            {MCA_GDN_CP_DETERMINISTIC_GUARD_PATCH_MARKER}
+            raise NotImplementedError(
+                "GDN context parallelism requires FLA's CP recurrent kernel; "
+                "the deterministic torch fallback does not synchronize recurrent state across CP ranks."
+            )
+
+        # Input projection
+"""
+MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_OLD = MCA_GDN_CP_LAYOUT_HELPERS_PATCH_MARKER
+MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_NEW = f"""class _ADPCPChunkExchange(torch.autograd.Function):
+    \"\"\"Autograd-safe CP chunk all-to-all for Megatron head-tail layout.\"\"\"
+
+    @staticmethod
+    def forward(
+        ctx,
+        tensor: torch.Tensor,
+        group: dist.ProcessGroup,
+        dim: int,
+        to_contiguous: bool,
+    ):
+        ctx.group = group
+        ctx.dim = dim
+        ctx.to_contiguous = to_contiguous
+        return _adp_cp_exchange_virtual_chunks(
+            tensor, group, dim=dim, to_contiguous=to_contiguous
+        )
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        grad_input = _adp_cp_exchange_virtual_chunks(
+            grad_output.contiguous(),
+            ctx.group,
+            dim=ctx.dim,
+            to_contiguous=not ctx.to_contiguous,
+        )
+        return grad_input, None, None, None
+
+
+def _adp_cp_exchange_virtual_chunks(
+    tensor: torch.Tensor,
+    group: dist.ProcessGroup,
+    *,
+    dim: int,
+    to_contiguous: bool,
+) -> torch.Tensor:
+    cp_size = dist.get_world_size(group)
+    if cp_size <= 1 or _adp_env_flag("ADP_MCA_CONTIGUOUS_CP"):
+        return tensor.contiguous()
+
+    cp_rank = dist.get_rank(group)
+    dim = dim if dim >= 0 else tensor.ndim + dim
+    x = tensor.movedim(dim, 0).contiguous()
+    local_seq_len = x.shape[0]
+    if local_seq_len % 2 != 0:
+        raise RuntimeError(
+            "Megatron head-tail CP chunk exchange requires an even local sequence "
+            f"length, got {{local_seq_len}}."
+        )
+
+    chunk_len = local_seq_len // 2
+    local_chunks = [x.narrow(0, 0, chunk_len), x.narrow(0, chunk_len, chunk_len)]
+
+    def owner_rank(virtual_chunk: int) -> int:
+        if virtual_chunk < cp_size:
+            return virtual_chunk
+        return 2 * cp_size - virtual_chunk - 1
+
+    def contiguous_rank(virtual_chunk: int) -> int:
+        return virtual_chunk // 2
+
+    if to_contiguous:
+        local_virtual_chunks = [cp_rank, 2 * cp_size - cp_rank - 1]
+        target_virtual_chunks = [2 * cp_rank, 2 * cp_rank + 1]
+        destination_rank = contiguous_rank
+    else:
+        local_virtual_chunks = [2 * cp_rank, 2 * cp_rank + 1]
+        target_virtual_chunks = [cp_rank, 2 * cp_size - cp_rank - 1]
+        destination_rank = owner_rank
+
+    send_parts = []
+    input_split_sizes: list[int] = []
+    for destination in range(cp_size):
+        matching_indices = [
+            idx
+            for idx, virtual_chunk in enumerate(local_virtual_chunks)
+            if destination_rank(virtual_chunk) == destination
+        ]
+        if len(matching_indices) > 1:
+            raise RuntimeError(
+                "Unexpected CP virtual-chunk routing: more than one local chunk "
+                f"targets rank {{destination}}."
+            )
+        if matching_indices:
+            send_parts.append(local_chunks[matching_indices[0]])
+            input_split_sizes.append(chunk_len)
+        else:
+            input_split_sizes.append(0)
+
+    if send_parts:
+        send_tensor = torch.cat(send_parts, dim=0).contiguous()
+    else:
+        send_tensor = x.new_empty((0, *x.shape[1:]))
+
+    output_split_sizes: list[int] = []
+    incoming_virtual_chunks: list[int | None] = []
+    for source in range(cp_size):
+        source_virtual_chunks = (
+            [source, 2 * cp_size - source - 1]
+            if to_contiguous
+            else [2 * source, 2 * source + 1]
+        )
+        incoming = [
+            virtual_chunk
+            for virtual_chunk in source_virtual_chunks
+            if destination_rank(virtual_chunk) == cp_rank
+        ]
+        if len(incoming) > 1:
+            raise RuntimeError(
+                "Unexpected CP virtual-chunk routing: more than one chunk from "
+                f"rank {{source}} targets rank {{cp_rank}}."
+            )
+        if incoming:
+            output_split_sizes.append(chunk_len)
+            incoming_virtual_chunks.append(incoming[0])
+        else:
+            output_split_sizes.append(0)
+            incoming_virtual_chunks.append(None)
+
+    recv_tensor = x.new_empty((sum(output_split_sizes), *x.shape[1:]))
+    dist.all_to_all_single(
+        recv_tensor,
+        send_tensor,
+        output_split_sizes=output_split_sizes,
+        input_split_sizes=input_split_sizes,
+        group=group,
+    )
+
+    chunks_by_virtual: dict[int, torch.Tensor] = {{}}
+    offset = 0
+    for size, virtual_chunk in zip(output_split_sizes, incoming_virtual_chunks):
+        if size:
+            chunks_by_virtual[virtual_chunk] = recv_tensor.narrow(0, offset, size)
+            offset += size
+
+    try:
+        ordered = torch.cat([chunks_by_virtual[chunk] for chunk in target_virtual_chunks], dim=0)
+    except KeyError as exc:
+        raise RuntimeError(
+            f"Missing CP virtual chunk {{exc.args[0]}} after all-to-all exchange."
+        ) from exc
+
+    return ordered.movedim(0, dim).contiguous()
+
+
+def _adp_cp_head_tail_to_contiguous(
+    tensor: torch.Tensor, group: dist.ProcessGroup, *, dim: int
+) -> torch.Tensor:
+    return _ADPCPChunkExchange.apply(tensor, group, dim, True)
+
+
+def _adp_cp_contiguous_to_head_tail(
+    tensor: torch.Tensor, group: dist.ProcessGroup, *, dim: int
+) -> torch.Tensor:
+    return _ADPCPChunkExchange.apply(tensor, group, dim, False)
+
+
+{MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_PATCH_MARKER}
+
+
+{MCA_GDN_CP_LAYOUT_HELPERS_PATCH_MARKER}"""
+MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_OLD = f"""        original_cp_positions = None
+        sorted_cp_positions = None
+        if cp_context is not None:
+            if qkvzba.shape[1] != seq_len:
+                raise RuntimeError(
+                    "Unexpected GDN sequence shape after input projection: "
+                    f"got {{qkvzba.shape[1]}}, expected {{seq_len}}."
+                )
+            original_cp_positions = _adp_cp_local_positions(seq_len, self.cp_group, qkvzba.device)
+            qkvzba, sorted_cp_positions = _adp_cp_undo_load_balancing(
+                qkvzba, original_cp_positions, self.cp_group, dim=1
+            )
+            {MCA_GDN_CP_UNDO_LAYOUT_PATCH_MARKER}
+"""
+MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_NEW = f"""        original_cp_positions = None
+        sorted_cp_positions = None
+        use_full_gather_cp_bridge = _adp_env_flag("ADP_MCA_GDN_CP_FULL_GATHER_BRIDGE")
+        if cp_context is not None:
+            if qkvzba.shape[1] != seq_len:
+                raise RuntimeError(
+                    "Unexpected GDN sequence shape after input projection: "
+                    f"got {{qkvzba.shape[1]}}, expected {{seq_len}}."
+                )
+            if use_full_gather_cp_bridge:
+                original_cp_positions = _adp_cp_local_positions(seq_len, self.cp_group, qkvzba.device)
+                qkvzba, sorted_cp_positions = _adp_cp_undo_load_balancing(
+                    qkvzba, original_cp_positions, self.cp_group, dim=1
+                )
+            else:
+                qkvzba = _adp_cp_head_tail_to_contiguous(qkvzba, self.cp_group, dim=1)
+                {MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_PATCH_MARKER}
+            {MCA_GDN_CP_UNDO_LAYOUT_PATCH_MARKER}
+"""
+MCA_GDN_CP_CHUNK_EXCHANGE_REDO_OLD = f"""        norm_out = norm_out.reshape(batch, seq_len, -1)
+        if cp_context is not None:
+            norm_out = _adp_cp_redo_load_balancing(
+                norm_out, original_cp_positions, sorted_cp_positions, self.cp_group, dim=1
+            )
+            {MCA_GDN_CP_REDO_LAYOUT_PATCH_MARKER}
+        norm_out = norm_out.transpose(0, 1).contiguous()
+"""
+MCA_GDN_CP_CHUNK_EXCHANGE_REDO_NEW = f"""        norm_out = norm_out.reshape(batch, seq_len, -1)
+        if cp_context is not None:
+            if use_full_gather_cp_bridge:
+                norm_out = _adp_cp_redo_load_balancing(
+                    norm_out, original_cp_positions, sorted_cp_positions, self.cp_group, dim=1
+                )
+            else:
+                norm_out = _adp_cp_contiguous_to_head_tail(norm_out, self.cp_group, dim=1)
+                {MCA_GDN_CP_CHUNK_EXCHANGE_REDO_PATCH_MARKER}
+            {MCA_GDN_CP_REDO_LAYOUT_PATCH_MARKER}
+        norm_out = norm_out.transpose(0, 1).contiguous()
+"""
 
 
 def patch_file(
@@ -190,10 +1091,11 @@ def patch_file(
     description: str,
     *,
     missing_ok: bool = False,
+    old_missing_ok: bool = False,
 ) -> int:
     try:
         spec = importlib.util.find_spec(module)
-    except ModuleNotFoundError as exc:
+    except (ImportError, ModuleNotFoundError) as exc:
         if missing_ok:
             print(f"Skipping optional {description}: {module} import failed ({exc}).")
             return 0
@@ -213,6 +1115,9 @@ def patch_file(
         return 0
 
     if old not in text:
+        if old_missing_ok:
+            print(f"Skipping {description}: expected prior block not found in {path}")
+            return 0
         print(f"Expected {description} block not found in {path}", file=sys.stderr)
         return 1
 
@@ -282,11 +1187,198 @@ def main() -> int:
             missing_ok=True,
         ),
         patch_file(
+            "llamafactory.train.mca.workflow",
+            MCA_SKIP_FINAL_SAVE_OLD,
+            MCA_SKIP_FINAL_SAVE_NEW,
+            MCA_SKIP_FINAL_SAVE_PATCH_MARKER,
+            "MCA SFT benchmark final save skip",
+            missing_ok=True,
+        ),
+        patch_file(
+            "llamafactory.train.mca.workflow",
+            MCA_SKIP_FINAL_PLOT_OLD,
+            MCA_SKIP_FINAL_PLOT_NEW,
+            MCA_SKIP_FINAL_PLOT_PATCH_MARKER,
+            "MCA SFT benchmark plot_loss skip",
+            missing_ok=True,
+        ),
+        patch_file(
+            "mcore_adapter.models.qwen3_5.config_qwen3_5",
+            MCA_QWEN35_LINEAR_CONFIG_OLD,
+            MCA_QWEN35_LINEAR_CONFIG_NEW,
+            MCA_QWEN35_LINEAR_CONFIG_PATCH_MARKER,
+            "MCA Qwen3.5 linear-attention config fields",
+            missing_ok=True,
+        ),
+        patch_file(
             "llamafactory.v1.plugins.model_plugins.kernels.ops.mlp.cuda_fused_moe",
             FUSED_MOE_LIGER_EXPERTS_OLD,
             FUSED_MOE_LIGER_EXPERTS_NEW,
             FUSED_MOE_LIGER_EXPERTS_PATCH_MARKER,
             "cuda_fused_moe LigerExperts compatibility",
+        ),
+        patch_file(
+            "mcore_adapter.trainer.trainer",
+            MCA_TP_SEQ_LENGTH_TP_ONLY_OLD,
+            MCA_TP_SEQ_LENGTH_NEW,
+            MCA_TP_SEQ_LENGTH_PATCH_MARKER,
+            "MCA tensor/context-parallel sequence-length padding upgrade",
+            missing_ok=True,
+            old_missing_ok=True,
+        ),
+        patch_file(
+            "mcore_adapter.trainer.trainer",
+            MCA_TP_SEQ_LENGTH_OLD,
+            MCA_TP_SEQ_LENGTH_NEW,
+            MCA_TP_SEQ_LENGTH_PATCH_MARKER,
+            "MCA tensor-parallel sequence-length padding",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.transformer.attention",
+            MCA_QWEN35_TP_OUTPUT_GATE_OLD,
+            MCA_QWEN35_TP_OUTPUT_GATE_NEW,
+            MCA_QWEN35_TP_OUTPUT_GATE_PATCH_MARKER,
+            "MCA Qwen3.5 TP output-gate slicing",
+            missing_ok=True,
+        ),
+        patch_file(
+            "mcore_adapter.models.model_factory",
+            MCA_CONTIGUOUS_CP_BATCH_OLD,
+            MCA_CONTIGUOUS_CP_BATCH_NEW,
+            MCA_CONTIGUOUS_CP_BATCH_PATCH_MARKER,
+            "MCA optional contiguous CP batch slicing",
+            missing_ok=True,
+        ),
+        patch_file(
+            "mcore_adapter.models.qwen3_5.modeling_qwen3_5",
+            MCA_QWEN35_CONTIGUOUS_CP_IMPORT_OLD,
+            MCA_QWEN35_CONTIGUOUS_CP_IMPORT_NEW,
+            MCA_QWEN35_CONTIGUOUS_CP_IMPORT_PATCH_MARKER,
+            "MCA Qwen3.5 optional contiguous CP import",
+            missing_ok=True,
+        ),
+        patch_file(
+            "mcore_adapter.models.qwen3_5.modeling_qwen3_5",
+            MCA_QWEN35_CONTIGUOUS_CP_RANGE_OLD,
+            MCA_QWEN35_CONTIGUOUS_CP_RANGE_NEW,
+            MCA_QWEN35_CONTIGUOUS_CP_RANGE_PATCH_MARKER,
+            "MCA Qwen3.5 optional contiguous CP input ranges",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_IMPORT_OLD,
+            MCA_GDN_CP_IMPORT_NEW,
+            MCA_GDN_CP_IMPORT_PATCH_MARKER,
+            "MCA GDN context-parallel imports",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_DIST_IMPORT_OLD,
+            MCA_GDN_CP_DIST_IMPORT_NEW,
+            MCA_GDN_CP_DIST_IMPORT_PATCH_MARKER,
+            "MCA GDN CP distributed imports",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_LAYOUT_HELPERS_OLD,
+            MCA_GDN_CP_LAYOUT_HELPERS_NEW,
+            MCA_GDN_CP_LAYOUT_HELPERS_PATCH_MARKER,
+            "MCA GDN CP load-balanced layout bridge helpers",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_OLD,
+            MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_NEW,
+            MCA_GDN_CP_CHUNK_EXCHANGE_HELPERS_PATCH_MARKER,
+            "MCA GDN CP virtual-chunk exchange helpers",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_INIT_OLD,
+            MCA_GDN_CP_INIT_NEW,
+            MCA_GDN_CP_INIT_PATCH_MARKER,
+            "MCA GDN context-parallel process group",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_FORWARD_OLD,
+            MCA_GDN_CP_FORWARD_NEW,
+            MCA_GDN_CP_FORWARD_PATCH_MARKER,
+            "MCA GDN context-parallel metadata",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_UNDO_LAYOUT_OLD,
+            MCA_GDN_CP_UNDO_LAYOUT_NEW,
+            MCA_GDN_CP_UNDO_LAYOUT_PATCH_MARKER,
+            "MCA GDN CP load-balanced to contiguous layout bridge",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_OLD,
+            MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_NEW,
+            MCA_GDN_CP_CHUNK_EXCHANGE_UNDO_PATCH_MARKER,
+            "MCA GDN CP virtual-chunk to contiguous exchange",
+            missing_ok=True,
+            old_missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_DETERMINISTIC_GUARD_OLD,
+            MCA_GDN_CP_DETERMINISTIC_GUARD_NEW,
+            MCA_GDN_CP_DETERMINISTIC_GUARD_PATCH_MARKER,
+            "MCA GDN CP deterministic fallback guard",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_CONV_OLD,
+            MCA_GDN_CP_CONV_NEW,
+            MCA_GDN_CP_CONV_PATCH_MARKER,
+            "MCA GDN context-parallel convolution",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_RULE_OLD,
+            MCA_GDN_CP_RULE_NEW,
+            MCA_GDN_CP_RULE_PATCH_MARKER,
+            "MCA GDN context-parallel recurrent kernel",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_REDO_LAYOUT_OLD,
+            MCA_GDN_CP_REDO_LAYOUT_NEW,
+            MCA_GDN_CP_REDO_LAYOUT_PATCH_MARKER,
+            "MCA GDN CP contiguous to load-balanced layout bridge",
+            missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.ssm.gated_delta_net",
+            MCA_GDN_CP_CHUNK_EXCHANGE_REDO_OLD,
+            MCA_GDN_CP_CHUNK_EXCHANGE_REDO_NEW,
+            MCA_GDN_CP_CHUNK_EXCHANGE_REDO_PATCH_MARKER,
+            "MCA GDN CP contiguous to virtual-chunk exchange",
+            missing_ok=True,
+            old_missing_ok=True,
+        ),
+        patch_file(
+            "megatron.core.transformer.transformer_config",
+            MCA_GDN_CP_CONFIG_OLD,
+            MCA_GDN_CP_CONFIG_NEW,
+            MCA_GDN_CP_CONFIG_PATCH_MARKER,
+            "MCA GDN context-parallel config assertion",
+            missing_ok=True,
         ),
     )
 

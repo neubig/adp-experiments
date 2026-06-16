@@ -165,11 +165,1004 @@ the LLaMA-Factory integration API at the time of testing. The patch helper now
 treats LLaMA-Factory HyperParallel modules as optional so missing or mismatched
 HyperParallel does not block ordinary SFT patching.
 
+### 2026-06-14 MCA / Megatron-Core notes
+
+LLaMA-Factory has a Megatron-Core Adapter path gated by `USE_MCA=1`. Do not use
+the PyPI `mcore-adapter==0.0.1` package; it installs no usable
+`mcore_adapter` module. The working adapter source is the ROLL subdirectory:
+
+```bash
+python -m pip install --force-reinstall --no-deps \
+  "git+https://github.com/alibaba/roll.git#subdirectory=mcore_adapter"
+python -m pip install --no-deps "megatron-core>=0.13.0,<0.14.0"
+```
+
+This produced `mcore_adapter==0.9.0` and `megatron-core==0.13.1` in the
+isolated MCA venv. LLaMA-Factory's MCA parser exposes the relevant MoE training
+knobs: `expert_model_parallel_size`, `pipeline_model_parallel_size`,
+`context_parallel_size`, `sequence_parallel`, `moe_token_dispatcher_type`,
+`moe_grouped_gemm`, `moe_shared_expert_overlap`, distributed optimizer, and
+gradient/parameter overlap.
+
+Transformer Engine did not install cleanly in the current Torch 2.12 / CUDA 13
+venv. `transformer-engine[pytorch]==2.16.0` downloaded the CUDA 13 support
+wheel but had no prebuilt `transformer_engine_torch` wheel for the exact
+`torch2.12.0+cu130` ABI, then failed source compilation because `cudnn.h` was
+not available on the build host. As a result, the first MCA smoke uses
+`transformer_impl: local`; Megatron warns that it is falling back to Torch Norm
+and Torch optimizer helpers. A fully optimized Megatron recipe likely needs a
+matching NGC-style container or CUDA/cuDNN headers plus a compatible TE wheel.
+
+Follow-up: Transformer Engine can be built in the isolated MCA venv if the pip
+NVIDIA headers are exposed during compilation:
+
+```bash
+VENV=.venv_mca
+SITE="$VENV/lib/python3.11/site-packages"
+export CUDNN_INCLUDE_DIR="$SITE/nvidia/cudnn/include"
+export CUDNN_LIB_DIR="$SITE/nvidia/cudnn/lib"
+export CPLUS_INCLUDE_PATH="$SITE/nvidia/cudnn/include:$SITE/nvidia/nccl/include:${CPLUS_INCLUDE_PATH:-}"
+export C_INCLUDE_PATH="$SITE/nvidia/cudnn/include:$SITE/nvidia/nccl/include:${C_INCLUDE_PATH:-}"
+export LIBRARY_PATH="$SITE/nvidia/cudnn/lib:$SITE/nvidia/nccl/lib:${LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$SITE/nvidia/cudnn/lib:$SITE/nvidia/nccl/lib:${LD_LIBRARY_PATH:-}"
+export NVTE_FRAMEWORK=pytorch
+export MAX_JOBS=$(nproc)
+export CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)
+python -m pip install -v --no-build-isolation --no-deps \
+  transformer-engine==2.16.0 \
+  transformer-engine-cu13==2.16.0 \
+  transformer-engine-torch==2.16.0
+```
+
+Runtime import additionally requires using the venv CUDA 13 libraries before
+the system CUDA libraries. `transformer-engine==2.16.0` referenced a
+`libcublasLt.so.13` symbol that was not present in the default cuBLAS library,
+so the MCA venv was upgraded to `nvidia-cublas==13.5.1.27` with `--no-deps`
+after installing TE's Python-only dependencies (`onnxscript` and
+`nvdlfw-inspect`). The MCA launcher now exports:
+
+```bash
+SITE="$VENV/lib/python3.11/site-packages"
+export LD_LIBRARY_PATH="$SITE/nvidia/cu13/lib:$SITE/nvidia/cudnn/lib:$SITE/nvidia/nccl/lib:${LD_LIBRARY_PATH:-}"
+```
+
+With that path, a local import probe succeeded for `transformer_engine.pytorch`
+and `mcore_adapter.models.AutoConfig` reported
+`experimental_attention_variant=gated_delta_net` for Qwen3.5-35B-A3B. Note
+that this makes the venv formally inconsistent with Torch 2.12's declared
+`nvidia-cublas<=13.1.1.3` dependency, so keep it isolated to MCA experiments.
+
+After the TE runtime fix, MCA smoke `123828` got past the earlier
+`TESpecProvider` failure and began constructing `Qwen3_5MoeConfig`, but failed
+before training with:
+
+```text
+AssertionError: wsd_decay_steps is required for WSD
+```
+
+The MCA/Megatron scheduler path does not apply LLaMA-Factory's default WSD
+split, so WSD must be explicit in MCA configs. The 12-step MCA smoke now uses:
+
+```yaml
+lr_scheduler_type: warmup_stable_decay
+lr_scheduler_kwargs:
+  wsd_decay_steps: 8
+  lr_wsd_decay_style: cosine
+```
+
+This corrected MCA smoke was resubmitted as job `123829` with run name
+`adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke6`.
+
+Job `123829` passed scheduler setup and reached
+`mcore_adapter.trainer: ***** Running training *****`, but failed on the first
+forward pass inside Transformer Engine fused attention:
+
+```text
+RuntimeError: Multiple libcudart libraries found: libcudart.so.12 and libcudart.so.13
+```
+
+The traceback ended in `transformer_engine.pytorch.cpp_extensions.fused_attn`.
+The next smoke keeps `transformer_impl=transformer_engine` for Qwen3.5
+gated-delta attention, but forces the attention backend away from TE fused
+attention via environment variables:
+
+```bash
+export NVTE_FLASH_ATTN=1
+export NVTE_FUSED_ATTN=0
+export NVTE_UNFUSED_ATTN=0
+```
+
+A local `AutoConfig.from_pretrained(...)` probe with these variables reported
+`attention_backend=AttnBackend.flash` and
+`transformer_impl=transformer_engine`. This MCA smoke is labeled `smoke7`.
+
+Smoke7 was submitted as job `123830`. It reached
+`mcore_adapter.trainer: ***** Running training *****` and got into the first
+backward pass, but failed before logging loss/W&B training metrics with:
+
+```text
+RuntimeError: Triton Error [CUDA]: out of memory
+```
+
+The traceback came from FLA's Triton autotuned `l2norm_bwd_kernel` during
+Qwen3.5 gated-delta attention backward. The GPU monitor showed local ranks 4-7
+on the second node at roughly 80GB used at failure, while the earlier steady
+state was around 40-49GB per rank. This makes the next MCA smoke a
+per-rank-activation-memory test rather than a launcher/runtime test:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_pp4_ep2_cp2_smoke.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_pp4_ep2_cp2_smoke.sbatch
+parallelism: TP=1, PP=4, EP=2, CP=2, GAS=8
+reason: use context parallelism to split the 32k sequence across two ranks and
+        keep the optimizer-step batch comparable after the data-parallel group
+        drops from 4 to 2.
+```
+
+Job `123831` failed during model construction before training:
+
+```text
+AssertionError: Gated delta net does not support context parallel for now, but got self.context_parallel_size=2.
+```
+
+For Qwen3.5 gated-delta MCA, `context_parallel_size > 1` is therefore not a
+usable memory-reduction knob yet. The next smoke keeps CP disabled and tries
+tensor parallelism instead:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke.sbatch
+parallelism: TP=2, PP=4, EP=2, CP=1, GAS=8
+reason: shard tensor dimensions and let MCA enable sequence parallelism for
+        TP+EP, without using the unsupported gated-delta context-parallel path.
+```
+
+Job `123832` (`smoke1`) reached training and logged one loss:
+
+```text
+{'loss': '0.8861', 'grad_norm': '9.925', 'learning_rate': '1e-05',
+ 'skipped_iter': 0, 'num_zeros_in_grad': 0,
+ 'token_per_sec_per_gpu': '1092', 'epoch': '4.117e-05'}
+```
+
+Peak memory stayed well below the smoke7 OOM level, roughly 45-62GB depending
+on rank/stage. It then failed on the second forward at embedding
+sequence-parallel reduce-scatter:
+
+```text
+AssertionError: First dimension of the tensor should be divisible by tensor parallel size
+```
+
+The root cause is MCA padding each optimizer step to the local
+gradient-accumulation max sequence length, which can be odd even though the
+nominal cutoff is 32768. The ADP patch helper now rounds MCA's padded step
+length up to a multiple of `tensor_model_parallel_size` before `_pad_batched_inputs`.
+The patched rerun is:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke2.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke2.sbatch
+parallelism: TP=2, PP=4, EP=2, CP=1, GAS=8
+```
+
+Job `123833` (`smoke2`) completed successfully:
+
+```text
+state: COMPLETED
+elapsed: 00:10:02
+exit_code: 0:0
+train_runtime: 517.4s
+train_steps_per_second: 0.023
+train_loss: 0.7112
+```
+
+The first two steps were dominated by startup/autotune, but later steps reached
+roughly 15-18 seconds per optimizer step in the progress log. The logged
+per-step throughput after warmup was typically around 15k-17k tokens/sec/GPU,
+substantially above the previous DeepSpeed hpZ8 fused-MoE smoke measurement.
+Memory was tight but no longer OOMed: the most loaded late-stage ranks on the
+second node reached roughly 79-80GB H100 memory. Transformer Engine and
+Megatron both warned that tensor/sequence-parallel overlap is fastest with:
+
+```bash
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+```
+
+The follow-up smoke keeps the same TP2/PP4/EP2/CP1/GAS8 geometry and adds only
+that environment setting:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke3.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke3.sbatch
+```
+
+Job `123834` (`smoke3`) also completed, but it was not a speed improvement:
+
+```text
+state: COMPLETED
+elapsed: 00:10:08
+exit_code: 0:0
+train_runtime: 523.6s
+train_steps_per_second: 0.023
+train_loss: 0.7102
+```
+
+The setting did remove the Megatron/Transformer Engine warning about
+`CUDA_DEVICE_MAX_CONNECTIONS`, but late-step throughput remained essentially
+unchanged: the stable steps were again around 15k-17k tokens/sec/GPU. Peak GPU
+memory was also unchanged at roughly 80.36GB, concentrated on the last local
+pipeline ranks. This means the connection setting is harmless, but not a
+measurable throughput fix in this small smoke. The peak memory also means that
+disabling full recomputation is not viable in the current TP2/PP4/EP2 layout
+without first reducing activation/model memory elsewhere.
+
+Transformer Engine also warned that FA3/FA4 may improve feature support or
+performance. The normal MCA venv remains on `flash_attn==2.8.3`; an isolated
+hardlink clone `.venv_mca_fa4` was created for the prerelease FA4 test. A
+plain `flash-attn-4[cu13]==4.0.0b11` install downgraded `nvidia-cublas` and
+broke Transformer Engine, and the latest prerelease Cutlass DSL caused
+`flash_attn.cute` import errors. The working import combination for the clone
+is:
+
+```text
+flash-attn-4==4.0.0b11
+nvidia-cutlass-dsl[cu13]==4.4.2
+nvidia-cublas==13.5.1.27  # force-reinstalled with --no-deps for TE runtime
+```
+
+The FA4 smoke keeps the same TP2/PP4/EP2/CP1/GAS8 geometry and points only the
+launcher venv at `.venv_mca_fa4`:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke4_fa4.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke4_fa4.sbatch
+```
+
+Job `123842` (`smoke4_fa4`) completed:
+
+```text
+state: COMPLETED
+elapsed: 00:11:19
+exit_code: 0:0
+train_runtime: 542.1s
+train_steps_per_second: 0.022
+train_loss: 0.7082
+```
+
+The 12-step total runtime was worse than smoke2/smoke3 because startup and
+early steps were slower. The later per-step `token_per_sec_per_gpu` values were
+however higher than smoke3 on the same step range, roughly 17.5k average across
+steps 8-12 versus roughly 16.5k for smoke3. FA4 did not eliminate all attention
+warnings: the log still emitted a `flash-attn v3` warning. Peak memory rose
+slightly to about 80.5GB on the tight late-stage ranks. Because the full-run
+startup cost would be amortized, the next FA4 smoke extends the same setup to
+50 steps:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke5_fa4_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke5_fa4_50step.sbatch
+```
+
+Job `123844` (`smoke5_fa4_50step`) completed:
+
+```text
+state: COMPLETED
+elapsed: 00:20:16
+exit_code: 0:0
+train_runtime: 1131.0s
+train_steps_per_second: 0.044
+train_loss: 0.6549
+```
+
+The run stayed healthy and logged losses through 50 steps. After startup, the
+progress bar settled mostly around 15-16 seconds per step. To determine whether
+this is actually better than the non-FA4 environment, the matched baseline is a
+50-step rerun of smoke3 with the same WSD schedule and no FA4 clone:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke6_base_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke6_base_50step.sbatch
+```
+
+Job `123845` (`smoke6_base_50step`) completed:
+
+```text
+state: COMPLETED
+elapsed: 00:20:23
+exit_code: 0:0
+train_runtime: 1136.0s
+train_steps_per_second: 0.044
+train_loss: 0.6541
+```
+
+This makes FA4 a wash rather than a clear win:
+
+```text
+50-step FA4 clone: 1131.0s train_runtime, 0.044 steps/s, peak ~80.44GB
+50-step base venv: 1136.0s train_runtime, 0.044 steps/s, peak ~80.50GB
+```
+
+The FA4 run had some higher per-step `token_per_sec_per_gpu` readings, but the
+end-to-end 50-step runtime differed by only about 0.4%, while the FA4 clone
+requires a fragile package combination and still emits a `flash-attn v3`
+warning. For now, keep the regular `.venv_mca` TP2/PP4/EP2 recipe as the
+practical baseline; FA4 is not worth carrying into full runs unless a newer
+Transformer Engine / FA4 stack becomes cleaner.
+
+FA3 source build note: a full Hopper `flash-attn-3` source build tried to
+compile 293 objects including SM80 and many unused dtypes/head dimensions. For
+the H100-only Qwen3.5-35B-A3B comparison, the `.venv_mca_fa3` environment was
+instead built from the FA3 Hopper source with only SM90, bf16, hdim256, and
+training backward enabled:
+
+```bash
+export FLASH_ATTENTION_FORCE_BUILD=TRUE
+export FLASH_ATTENTION_DISABLE_SM80=TRUE
+export FLASH_ATTENTION_DISABLE_FP16=TRUE
+export FLASH_ATTENTION_DISABLE_FP8=TRUE
+export FLASH_ATTENTION_DISABLE_HDIM64=TRUE
+export FLASH_ATTENTION_DISABLE_HDIM96=TRUE
+export FLASH_ATTENTION_DISABLE_HDIM128=TRUE
+export FLASH_ATTENTION_DISABLE_HDIM192=TRUE
+export FLASH_ATTENTION_DISABLE_HDIMDIFF64=TRUE
+export FLASH_ATTENTION_DISABLE_HDIMDIFF192=TRUE
+export FLASH_ATTENTION_DISABLE_SPLIT=TRUE
+export FLASH_ATTENTION_DISABLE_PAGEDKV=TRUE
+export FLASH_ATTENTION_DISABLE_APPENDKV=TRUE
+export FLASH_ATTENTION_DISABLE_LOCAL=TRUE
+export FLASH_ATTENTION_DISABLE_SOFTCAP=TRUE
+export FLASH_ATTENTION_DISABLE_PACKGQA=TRUE
+export FLASH_ATTENTION_DISABLE_VARLEN=TRUE
+export FLASH_ATTENTION_DISABLE_CLUSTER=TRUE
+python setup.py install
+```
+
+This reduced the build to four objects and installed `flash-attn-3 3.0.0`.
+Transformer Engine imports now report `FlashAttentionUtils.v3_is_installed ==
+True` and `fa3_version == 3.0.0` in `.venv_mca_fa3`. The matched 50-step smoke
+keeps the same TP2/PP4/EP2/CP1/GAS8 geometry as smoke6 but runs from the FA3
+venv:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke7_fa3_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke7_fa3_50step.sbatch
+```
+
+Job `123848` (`smoke7_fa3_50step`) completed:
+
+```text
+state: COMPLETED
+elapsed: 00:19:49
+exit_code: 0:0
+train_runtime: 1091.0s
+train_steps_per_second: 0.046
+train_loss: 0.6538
+```
+
+FA3 is a modest improvement over the matched 50-step baseline, but not a
+fundamental fix:
+
+```text
+50-step FA3 clone: 1091.0s train_runtime, 0.046 steps/s
+50-step FA4 clone: 1131.0s train_runtime, 0.044 steps/s
+50-step base venv: 1136.0s train_runtime, 0.044 steps/s
+```
+
+The FA3 run removed the previous Transformer Engine warning about missing
+flash-attn v3, replacing it with a flash-attn v4 recommendation. Post-warmup
+steps were usually around 14.5-17s with per-step throughput roughly
+16k-19k tokens/sec/GPU. This is worth keeping as the current best MCA
+environment, but the roughly 4% end-to-end speedup means the main remaining
+bottlenecks are still parallelism, communication, and Qwen3.5 gated-delta/FLA
+kernel behavior rather than the FlashAttention package alone.
+
+Selective recompute was tested to see whether full-layer activation
+checkpointing could be reduced. Job `123849` (`smoke8_fa3_selective_50step`)
+used the same FA3 TP2/PP4/EP2 geometry but changed:
+
+```yaml
+recompute_granularity: selective
+recompute_method: null
+recompute_modules: core_attn
+recompute_num_layers: null
+```
+
+This failed before logging loss:
+
+```text
+state: FAILED
+elapsed: 00:02:23
+exit_code: 143:0
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.00-1.09 GiB.
+GPU 0/1 had only about 600-655 MiB free with roughly 78.5 GiB in use.
+```
+
+The traceback reached the first forward pass through the MoE path:
+
+```text
+MoELayer.forward
+token_dispatcher.combine_preprocess
+reduce_scatter_to_sequence_parallel_region
+torch.empty_like(input_tensor_list[rank])
+```
+
+Megatron also warned that `core_attn` recompute is usually unnecessary with a
+Transformer Engine fused attention backend. This negative result means the
+current run is not mainly limited by attention activation memory; removing
+full-layer recompute immediately exposes MoE/token-dispatch memory. The next
+selective recompute smoke therefore targets routed MoE internals instead:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke9_fa3_selective_moe_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke9_fa3_selective_moe_50step.sbatch
+recompute_modules: moe,moe_act
+```
+
+Job `123850` (`smoke9_fa3_selective_moe_50step`) also failed before logging
+loss:
+
+```text
+state: FAILED
+elapsed: 00:02:38
+exit_code: 143:0
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.24 GiB.
+GPU 3 had 1.15 GiB free with roughly 78.02 GiB in use.
+```
+
+This time the traceback confirmed that MoE-layer checkpointing was active:
+
+```text
+MoELayer.forward
+tensor_parallel.checkpoint
+routed_experts_compute
+token_dispatcher.combine_preprocess
+reduce_scatter_to_sequence_parallel_region
+torch.empty_like(input_tensor_list[rank])
+```
+
+So selective MoE recompute reduced live memory compared with `core_attn` only,
+but not enough to fit the first forward. Because the failed allocation missed
+by about 90 MiB, the next smoke adds `layernorm` recompute to drop the
+pre-MLP layernorm state around the MoE path while still avoiding full
+gated-delta attention recompute:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke10_fa3_selective_moe_lnorm_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_smoke10_fa3_selective_moe_lnorm_50step.sbatch
+recompute_modules: moe,moe_act,layernorm
+```
+
+Job `123852` (`smoke10_fa3_selective_moe_lnorm_50step`) failed as well:
+
+```text
+state: FAILED
+elapsed: 00:03:46
+exit_code: 143:0
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.65 GiB.
+GPU 0/1 had about 1.47-1.59 GiB free with roughly 77.6-77.7 GiB in use.
+```
+
+The GPU monitor sampled the first node at roughly 80.3-80.7 GiB on local ranks
+0-3 before failure. Adding `layernorm` recompute reduced allocated PyTorch
+memory slightly but changed the failing allocation shape and still did not fit.
+For the current TP2/PP4/EP2/CP1 geometry, full-layer recompute remains
+necessary; selective recompute is not a viable immediate speedup unless memory
+is reduced by another mechanism first.
+
+The next parallelism smoke tried to reduce per-stage memory with PP8 while
+dropping TP to 1:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_pp8_ep2_smoke11_fa3_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_pp8_ep2_smoke11_fa3_50step.sbatch
+parallelism: TP=1, PP=8, EP=2, CP=1, GAS=8
+```
+
+Job `123856` (`smoke11_fa3_pp8_ep2_50step`) failed before logging loss:
+
+```text
+state: FAILED
+elapsed: 00:03:33
+exit_code: 143:0
+```
+
+This failure was different from the selective-recompute OOMs. The model body
+memory was much lower, but the final pipeline ranks OOMed in the loss path:
+
+```text
+language_module.compute_language_model_loss
+tensor_parallel.vocab_parallel_cross_entropy
+_VocabParallelCrossEntropy.forward
+NCCL WARN Cuda failure 2 'out of memory'
+```
+
+The likely cause is dropping tensor parallelism: TP1 leaves the 248k-token
+Qwen3.5 vocabulary/loss shard too large on the last stage. The corrected PP8
+follow-up keeps TP2 for vocab/logit sharding, drops expert parallelism to EP1
+to fit the 16-rank world with PP8, and raises gradient accumulation to 16 to
+keep the total train batch at 16:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp8_ep1_smoke12_fa3_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp8_ep1_smoke12_fa3_50step.sbatch
+parallelism: TP=2, PP=8, EP=1, CP=1, GAS=16
+```
+
+Job `123859` (`smoke12_fa3_tp2_pp8_ep1_50step`) failed on a runtime guard
+before logging loss:
+
+```text
+state: FAILED
+elapsed: 00:02:07
+exit_code: 143:0
+ValueError: During training, performance may degrade if MoE and tensor
+parallelism are enabled without also enabling sequence parallelism.
+```
+
+The fix is to keep the same split but explicitly enable sequence parallelism:
+
+```text
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp8_ep1_sp_smoke13_fa3_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp8_ep1_sp_smoke13_fa3_50step.sbatch
+parallelism: TP=2, PP=8, EP=1, CP=1, SP=true, GAS=16
+```
+
+Job `123861` (`smoke13_fa3_tp2_pp8_ep1_sp_50step`) completed:
+
+```text
+state: COMPLETED
+elapsed: about 00:22:49 by Slurm, 00:22:01.76 train runtime
+train_runtime: 1322s
+train_steps_per_second: 0.038
+train_loss: 0.6556
+```
+
+This is slower than the matched FA3 TP2/PP4/EP2 50-step baseline
+(`1091.0s`, `0.046 steps/s`) even though the late steady-state token rates
+looked reasonable. The first two optimizer steps were extremely slow
+(`1124` and `1592` tokens/sec/GPU), then later steps mostly settled in the
+roughly `10k`-`16k` tokens/sec/GPU range. Excluding the first 10 logged steps,
+the mean sampled rate was about `12.9k` tokens/sec/GPU, but the deeper PP8
+pipeline and GAS16 still produced worse end-to-end throughput. Peak sampled
+memory was much lower than the original PP4 run on most stages, but the late
+pipeline ranks still reached about `76.8 GiB`.
+
+Two warnings are worth carrying forward as possible overhead clues:
+
+```text
+Non-interleaved pipeline parallelism does not support overlapping p2p communication.
+The next bucket's parameter all-gather operation has already been dispatched.
+The AccumulateGrad node's stream does not match the stream of the node that produced the incoming gradient.
+```
+
+The next follow-up keeps the faster TP2/PP4/EP2 topology but enables virtual
+pipeline interleaving so p2p overlap may be effective without increasing
+pipeline depth:
+
+```text
+job: 123864
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_vp2_smoke14_fa3_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_vp2_smoke14_fa3_50step.sbatch
+parallelism: TP=2, PP=4, EP=2, CP=1, VP=2, GAS=8
+```
+
+Job `123864` (`smoke14_fa3_tp2_pp4_ep2_vp2_50step`) was cancelled after
+the 10-step burn-in because it was clearly slower than the baseline:
+
+```text
+state: CANCELLED by operator after 11 logged losses
+non_interleaved_p2p_warning_count: 0
+param_allgather_warning_count: 0
+accumulategrad_warning_count: 16
+tokens/sec/GPU samples:
+  1163, 3197, 9797, 4537, 5534, 5239, 5940, 4859, 6355, 6301, 6007
+mean from logged step 3 onward: about 6063 tokens/sec/GPU
+progress after burn-in: roughly 46-55 seconds/step
+peak sampled memory: up to about 81.0 GiB on local rank 4 of the second node
+```
+
+This confirms that simply enabling virtual pipeline interleaving is not an
+efficiency fix here. It removes the non-interleaved p2p warning, but the
+schedule overhead and memory pressure are much worse than the plain PP4 FA3
+baseline.
+
+The next smoke kept the same fast FA3 TP2/PP4/EP2 topology but enabled
+sequence parallelism without virtual pipeline interleaving:
+
+```text
+job: 123865
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_sp_smoke15_fa3_50step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_sp_smoke15_fa3_50step.sbatch
+parallelism: TP=2, PP=4, EP=2, CP=1, SP=true, VP=null, GAS=8
+```
+
+Job `123865` completed all 50 steps:
+
+```text
+state: COMPLETED
+train_runtime: 1081s
+train_steps_per_second: 0.046
+train_loss: 0.6535
+token/sec/GPU mean from logged step 11 onward: about 17.4k
+peak sampled memory MiB by local GPU:
+  0: 71037, 1: 71473, 2: 67977, 3: 67957,
+  4: 80557, 5: 80497, 6: 79817, 7: 79981
+```
+
+This is the best 50-step MCA smoke measured so far, but only by a small margin:
+`1081s` versus `1091s` for the matched non-SP FA3 baseline. Sequence
+parallelism removed the parameter all-gather warning, but the non-interleaved
+p2p warning and AccumulateGrad stream warning remained:
+
+```text
+non_interleaved_p2p_warning_count: 16
+param_allgather_warning_count: 0
+accumulategrad_stream_warning_count: 16
+```
+
+Keep
+`qwen35_35b_a3b_mca_tp2_pp4_ep2_sp_smoke15_fa3_50step.yaml` as the best
+measured MCA recipe so far. The small gain suggests SP is useful as a default
+setting for TP+MoE, but it is not the fundamental fix for low MFU; the largest
+remaining targets are still the non-interleaved pipeline schedule and the
+Qwen3.5 gated-delta implementation.
+
+Follow-up smokes on 2026-06-15 tried the highest-impact remaining knobs:
+
+```text
+job: 123870
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp4_ep2_sp_gas64_smoke16_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp4_ep2_sp_gas64_smoke16_fa3_12step.sbatch
+parallelism: TP=2, PP=4, EP=2, CP=1, SP=true, GAS=64
+result: COMPLETED
+train_runtime: 1464s for 12 optimizer steps
+train_samples_per_second: 1.049
+train_steps_per_second: 0.008
+train_loss: 0.5324
+steady logged token/sec/GPU after burn-in: mostly 21.5k-22.3k
+peak sampled memory: about 80.3 GiB on the hottest local ranks
+```
+
+Increasing GAS from 8 to 64 raised later token/sec/GPU compared with the
+50-step GAS8 run, but it also changed the global batch from 16 to 128 and left
+very little memory headroom on several ranks. Treat this as evidence that
+kernel/communication amortization still matters, not as the default full-run
+recipe unless the learning-rate and batch-size change are explicitly desired.
+
+```text
+job: 123871
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp4_pp2_ep2_sp_smoke17_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp4_pp2_ep2_sp_smoke17_fa3_12step.sbatch
+parallelism: TP=4, PP=2, EP=2, CP=1, SP=true, GAS=8
+result: FAILED before first loss
+root error: Qwen3.5 attention output-gate view mismatch in
+  megatron/core/transformer/attention.py::_apply_output_gate
+```
+
+TP4/PP2 is therefore not a drop-in improvement today. The failure is a shape
+mismatch in the MCA/Megatron Qwen3.5 output-gate path, not a Slurm or memory
+issue.
+
+The follow-up TP4/PP2 retry added an ADP patch to mirror Megatron's query
+sub-slice onto the full-attention output gate when
+`num_query_groups < tensor_model_parallel_size`:
+
+```text
+job: 123875
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp4_pp2_ep2_sp_smoke20_gatefix_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp4_pp2_ep2_sp_smoke20_gatefix_fa3_12step.sbatch
+parallelism: TP=4, PP=2, EP=2, CP=1, SP=true, GAS=8
+result: COMPLETED
+train_runtime: 608.1s for 12 optimizer steps
+train_samples_per_second: 0.316
+train_steps_per_second: 0.020
+train_loss: 0.709
+steady logged token/sec/GPU after steps 5-12: about 10.7k mean
+peak sampled memory MiB by local GPU: 68171, 68087, 67885, 67667,
+  67881, 67743, 67801, 67545
+```
+
+The patch fixes the TP4 correctness blocker, but TP4/PP2 is much slower than
+the TP2/PP4/SP best run: about 50.7 seconds/optimizer step for this smoke
+versus about 21.6 seconds/optimizer step for job `123865`. The likely tradeoff
+is that TP4 lowers memory and pipeline depth, but the extra TP collectives and
+smaller per-rank GEMMs dominate for this model and sequence length. Keep the
+gate patch for correctness, but do not use TP4/PP2 as the speed recipe.
+
+An experimental ADP patch now wires FLA's context-parallel causal convolution
+and `chunk_gated_delta_rule(..., cp_context=...)` into Megatron-Core's
+`GatedDeltaNet`, and relaxes Megatron-Core's configuration assertion for
+`experimental_attention_variant: gated_delta_net`. This is deliberately marked
+as experimental in `scripts/patch_llamafactory_liger_eval_skip_logits.py` and
+currently assumes microbatch size 1.
+
+```text
+job: 123873
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_pp4_ep2_cp2_smoke18_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_pp4_ep2_cp2_smoke18_fa3_12step.sbatch
+parallelism: TP=1, PP=4, EP=2, CP=2, SP=false, GAS=8
+result: FAILED during optimizer/grad-norm after reaching backward
+root error: NCCL CUDA OOM on a rank with only about 55 MiB free
+```
+
+This proved the patched GDN CP path can reach training/backward, but TP1 leaves
+too much state on each GPU and is not a viable layout.
+
+```text
+job: 123874
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke19_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke19_fa3_12step.sbatch
+parallelism: TP=2, PP=2, EP=2, CP=2, SP=true, GAS=8
+result: logged one optimizer step, then FAILED on next batch
+first logged loss: 0.9079
+first logged token/sec/GPU: 752.9
+root error: MCA CP batch slicing attempted view [1, 4, 8208] for 32834 values
+```
+
+TP2/CP2 avoids the TP1 memory cliff and gets through one step, but it is far
+too slow and then fails because MCA's CP input slicing/padding is not rounding
+the sequence shape consistently for the next batch. Context parallelism is
+therefore not yet a current speed win; it needs a real CP batching fix and
+profiling of the FLA CP kernels before it can compete with the non-CP TP2/PP4
+recipe.
+
+The CP issue had two independent parts. First, Megatron/MCA's causal
+load-balanced CP slicing reshapes the sequence into `2 * context_parallel_size`
+chunks and assigns each rank one head chunk and one tail chunk. With sequence
+parallel enabled, the trainer padding must therefore round each step to a
+multiple that is safe for TP, the CP view, and TP*CP sequence parallelism. The
+ADP patch helper now rounds to
+`lcm(tensor_model_parallel_size, 2 * context_parallel_size,
+tensor_model_parallel_size * context_parallel_size)` when CP is enabled.
+
+Second, the FLA GatedDeltaNet CP operators assume each CP rank owns one
+contiguous global sequence interval. Megatron's head-tail CP layout violates
+that assumption: for CP=2, rank 0 owns chunks `[0, 3]` and rank 1 owns chunks
+`[1, 2]`. Feeding that directly into FLA with `build_cp_context` lets training
+run, but the recurrent/conv boundary metadata is semantically wrong. NVIDIA
+NeMo AutoModel's Qwen3.5 CP linear-attention wrapper takes the same conservative
+approach now used here: gather CP shards, restore dense contiguous sequence
+order for FLA, run the linear-attention operator, then restore the
+load-balanced layout for the surrounding transformer
+(see `nemo_automodel.components.models.qwen3_5_moe.cp_linear_attn`).
+
+The ADP patch helper now implements that bridge inside
+`megatron.core.ssm.gated_delta_net`:
+
+- `_adp_cp_undo_load_balancing`: all-gather rank-local head-tail tensors, sort
+  by global token position, and select this CP rank's contiguous interval before
+  the FLA causal convolution and `chunk_gated_delta_rule`.
+- `_adp_cp_redo_load_balancing`: all-gather contiguous GDN outputs, then
+  restore the rank-local head-tail order before Megatron's output projection.
+- `_ADPCPAllGatherConcat`: an autograd-safe all-gather/concat wrapper whose
+  backward all-reduces full gradients and slices the local gradient.
+- A deterministic-mode guard: CP GDN must use FLA's CP recurrent kernel because
+  the torch fallback does not synchronize recurrent state across CP ranks.
+
+A local two-process CPU `gloo` harness verified the bridge permutation and
+backward for the CP=2 layout: rank 0 `[0, 1, 6, 7]` and rank 1 `[2, 3, 4, 5]`
+become contiguous `[0, 1, 2, 3]` / `[4, 5, 6, 7]`, then restore exactly with
+unit gradients.
+
+The padding-only CP rerun completed, but should be treated as a semantically
+weak baseline because it still fed Megatron head-tail chunks to FLA as if they
+were contiguous:
+
+```text
+job: 123876
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke21_align_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke21_align_fa3_12step.sbatch
+parallelism: TP=2, PP=2, EP=2, CP=2, SP=true, GAS=8
+result: COMPLETED
+train_runtime: 869.4s for 12 optimizer steps
+train_samples_per_second: 0.221
+train_steps_per_second: 0.014
+train_loss: 0.7136
+post-burn-in token/sec/GPU: mostly 6.2k-8.7k
+peak sampled memory MiB by local GPU: 79893, 80329, 81047, 80487,
+  79791, 79871, 81025, 80989
+```
+
+The bridged CP rerun completed with the FLA-contiguous/Megatron-head-tail
+layout conversion active:
+
+```text
+job: 123877
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke23_bridge_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke23_bridge_fa3_12step.sbatch
+parallelism: TP=2, PP=2, EP=2, CP=2, SP=true, GAS=8
+result: COMPLETED
+train_runtime: 896.2s for 12 optimizer steps
+train_samples_per_second: 0.214
+train_steps_per_second: 0.013
+train_loss: 0.7086
+post-burn-in token/sec/GPU: mostly 6.3k-7.8k
+peak sampled memory MiB by local GPU: 80453, 80229, 80387, 80507,
+  79931, 80111, 80847, 80809
+```
+
+The follow-up smoke replaced the full all-gather bridge with an all-to-all
+virtual-chunk exchange. This still redistributes full q/k/v/gate streams before
+calling FLA, but each rank receives only the two virtual chunks that make up its
+contiguous FLA interval instead of materializing the entire global sequence:
+
+```text
+job: 123879
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke24_vchunk_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke24_vchunk_fa3_12step.sbatch
+parallelism: TP=2, PP=2, EP=2, CP=2, SP=true, GAS=8
+result: training completed and logged to wandb; Slurm batch was marked FAILED
+        because the launcher file was edited while the shell was still reading
+        its final status lines
+train_runtime: 790.1s for 12 optimizer steps
+train_samples_per_second: 0.243
+train_steps_per_second: 0.015
+train_loss: 0.7082
+post-burn-in token/sec/GPU: mostly 7.9k-10.4k
+peak sampled memory MiB by local GPU: 79815, 80089, 81051, 80731,
+  79431, 79511, 80931, 80813
+```
+
+The native compact-state path is implemented behind
+`ADP_MCA_GDN_CP_NATIVE_VCHUNK=1` in
+`scripts/patch_fla_gdn_native_virtual_cp.py`. It keeps Megatron's head-tail
+layout in place and teaches FLA's compact CP exchanges about virtual chunks:
+the causal convolution exchanges only `W - 1` predecessor tokens per virtual
+chunk, and the gated-delta forward/backward exchange only compact recurrent
+state-transition summaries. This avoids full q/k/v stream redistribution.
+The first native smoke completed and had loss consistent with smoke24, but it
+was slower because the implementation launched the FLA summary kernels once per
+local virtual chunk:
+
+```text
+job: 123880
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke25_native_vchunk_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke25_native_vchunk_fa3_12step.sbatch
+parallelism: TP=2, PP=2, EP=2, CP=2, SP=true, GAS=8
+result: COMPLETED
+train_runtime: 974.6s for 12 optimizer steps
+train_samples_per_second: 0.197
+train_steps_per_second: 0.012
+train_loss: 0.7096
+post-burn-in token/sec/GPU: mostly 6.2k-6.7k
+peak sampled memory MiB by local GPU: 80883, 80955, 80959, 80781,
+  80893, 80875, 80993, 80619
+interpretation: correctness smoke passed, but compact native CP is not yet a
+  speed win; the saved tensor redistribution is outweighed by extra per-chunk
+  FLA summary launch/autotune overhead.
+```
+
+A follow-up native smoke fuses the two local virtual chunks into one FLA
+multi-sequence summary launch where possible. Forward uses FLA's existing
+`MULTI_SEQS` path; backward extends the merged backward summary kernel with the
+same sequence-grid dimension and writes one compact summary per local virtual
+chunk:
+
+```text
+job: 123884
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke26_native_vchunk_multiseq_fa3_12step.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_tp2_pp2_ep2_cp2_sp_smoke26_native_vchunk_multiseq_fa3_12step.sbatch
+parallelism: TP=2, PP=2, EP=2, CP=2, SP=true, GAS=8
+result: COMPLETED
+train_runtime: 962.2s for 12 optimizer steps
+train_samples_per_second: 0.200
+train_steps_per_second: 0.012
+train_loss: 0.7073
+post-burn-in token/sec/GPU: mostly 6.3k-6.8k
+peak sampled memory MiB by local GPU: 80931, 80687, 80777, 81073,
+  80911, 80989, 80931, 80915
+interpretation: fusing the two local virtual chunks into one summary launch
+  slightly improved smoke25 but remained much slower than smoke24. For the
+  current 32k setup, the all-to-all full-stream virtual-chunk bridge is the
+  fastest validated CP option. Native compact-state CP remains useful as a
+  correctness base for longer contexts, but needs deeper FLA kernel work before
+  it is a speed win.
+```
+
+Open MCA memory/speed candidates after the TP2 smoke:
+
+- For immediate 32k MCA training, prefer smoke24's all-to-all virtual-chunk
+  bridge. For longer contexts, continue from the native virtual-chunk path but
+  expect to work on FLA compact-state merge kernels, tiny per-layer all-gathers,
+  and/or CP kernel launch/autotune overhead; simply avoiding q/k/v
+  redistribution was not enough to improve speed at 32k.
+- If TP2 still OOMs in `l2norm_bwd_kernel`, add a reproducible ADP patch to
+  constrain or pre-warm FLA's Triton l2norm backward autotuning, because job
+  `123830` failed during autotune/first backward at near-full H100 memory.
+- The TP4 Qwen3.5 output-gate shape mismatch is fixed by the ADP patch helper,
+  but the validated TP4/PP2 retry is slower than TP2/PP4. Do not use TP4/PP2
+  for speed without a new reason to believe TP overhead has been reduced.
+- Larger GAS improves late logged token/sec/GPU, but changes the optimizer-step
+  batch. Use it only together with deliberate learning-rate/batch-size tuning.
+
+The first two-node MCA smoke is:
+
+```text
+job: 123821
+run: adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke2
+config: configs/full_condenser_24k_all_records_v2_adapted/qwen35_35b_a3b_mca_pp4_ep4_smoke.yaml
+launcher: scripts/run_qwen35_35b_a3b_mca_pp4_ep4_smoke.sbatch
+parallelism: TP=1, PP=4, EP=4, CP=1, GAS=4
+```
+
+The raw copied venv console scripts still point at the original venv. Use
+`scripts/mca_bin/torchrun` with `MCA_PYTHON=/path/to/.venv_mca/bin/python` so
+LLaMA-Factory's MCA launcher calls the MCA interpreter via
+`python -m torch.distributed.run`.
+
+Two early MCA smoke attempts failed before training:
+
+```text
+job 123820: MCA parser rejected overwrite_output_dir; removed that key from the smoke config.
+job 123821: mcore_adapter converted Qwen3.5-MoE HF config keys into MCA keys,
+           but Qwen3_5Config did not declare Qwen3.5 linear-attention fields,
+           causing TypeError on linear_conv_kernel_dim.
+```
+
+The ADP patch helper now also patches
+`mcore_adapter.models.qwen3_5.config_qwen3_5` to declare the Qwen3.5
+linear-attention and Qwen3.5-MoE template fields that the adapter itself maps:
+`linear_conv_kernel_dim`, `linear_key_head_dim`, `linear_value_head_dim`,
+`linear_num_key_heads`, `linear_num_value_heads`, `linear_attention_freq`,
+`attention_output_gate`, `experimental_attention_variant`, and
+`moe_shared_expert_gate`. After this patch, a local
+`AutoConfig.from_pretrained("/project/flame/gneubig/adp/models/Qwen3.5-35B-A3B")`
+probe succeeded and reported `num_moe_experts=256`, `moe_router_topk=8`, and
+`experimental_attention_variant=gated_delta_net`.
+
+The next MCA attempts surfaced two more compatibility constraints:
+
+```text
+job 123822: got past Qwen3.5 config conversion but failed because
+           apply_rope_fusion requires Transformer Engine >= 1.4 or Apex.
+           The smoke config now sets apply_rope_fusion: false.
+job 123823: got past rope fusion but failed because megatron-core==0.13.1
+           does not include
+           megatron.core.models.gpt.experimental_attention_variant_module_specs,
+           which ROLL's Qwen3.5 adapter imports for gated-delta attention.
+```
+
+Upgrading only the isolated MCA venv to `megatron-core==0.16.1` fixed the
+missing experimental-attention module in a local import/config probe:
+
+```text
+AutoConfig.from_pretrained(...Qwen3.5-35B-A3B) -> Qwen3_5Config
+transformer_impl: transformer_engine
+experimental_attention_variant: gated_delta_net
+```
+
+The MCA smoke at this point was:
+
+```text
+job: 123824
+run: adp-bench-qwen35-35b-a3b-mca-pp4-ep4-seq32768-smoke5
+parallelism: TP=1, PP=4, EP=4, CP=1, GAS=4
+config changes since smoke3: megatron-core==0.16.1, transformer_impl=transformer_engine,
+                            apply_rope_fusion=false
+```
+
+This path requires a matching Transformer Engine runtime. Smoke `123824` failed
+before model construction with:
+
+```text
+NameError: name 'TESpecProvider' is not defined
+```
+
+This comes from Megatron's experimental gated-delta attention spec. The module
+is present in `megatron-core==0.16.1`, but it only defines `TESpecProvider` when
+Transformer Engine imports successfully. ROLL's Qwen3.5 model also asserts
+`transformer_impl == "transformer_engine"` when the gated-delta attention
+variant is present, so MCA was blocked until a compatible Transformer Engine
+stack was available. The TE build/runtime notes above describe the fix; the MCA
+launcher now exports the isolated venv's CUDA 13, cuDNN, and NCCL libraries so
+future MCA submissions load that working stack.
+
 For the next full run, use the best stable hpZ8 DeepSpeed recipe and switch only
 the scheduler to WSD:
 
 ```yaml
 deepspeed: ds_z3_config_qwen35_hpz8.json
+use_v1_kernels: cuda_fused_moe
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 8
 lr_scheduler_type: warmup_stable_decay
@@ -177,6 +1170,56 @@ warmup_ratio: 0.03
 eval_steps: 100
 save_only_model: false
 ```
+
+The prepared no-gradient-checkpointing fallback keeps the same hpZ8 and
+`cuda_fused_moe` settings for a 12-step smoke. This isolates activation
+recompute overhead from the fused-MoE kernel choice. LLaMA-Factory's model
+preparation path does **not** use only Hugging Face's
+`gradient_checkpointing: false` for this; it checks the model argument
+`disable_gradient_checkpointing`. Correct no-GC configs should therefore set
+both:
+
+```yaml
+gradient_checkpointing: false
+disable_gradient_checkpointing: true
+```
+
+The first queued job for this fallback was:
+
+```text
+job: 123825
+run: adp-bench-qwen35-35b-a3b-hpz8-cuda-fused-moe-no-gc-seq32768-smoke
+```
+
+Job `123825` failed before launch because the patch helper tried to import the
+optional MCA workflow in the base venv, where `mcore_adapter` is intentionally
+not installed. The helper now skips optional MCA patches on `ImportError`; the
+same smoke was resubmitted as job `123826`.
+
+Job `123826` completed, but it was **not** a valid no-gradient-checkpointing
+measurement: the log still included `Gradient checkpointing enabled.` twice.
+The resulting timing closely matched the checkpointed hpZ8 fused-MoE smoke
+because checkpointing was still active. The corrected smoke adds
+`disable_gradient_checkpointing: true`, uses run name
+`adp-bench-qwen35-35b-a3b-hpz8-cuda-fused-moe-disable-gc-seq32768-smoke`, and
+was submitted as job `123827`.
+
+Job `123827` did honor the no-gradient-checkpointing setting: the log did not
+include `Gradient checkpointing enabled.` It failed on the first real training
+step with CUDA OOM before logging a loss:
+
+```text
+rank12: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 876 MiB.
+GPU 4 total capacity: 79.18 GiB
+process memory in use: 78.63 GiB
+allocated by PyTorch: 75.32 GiB
+reserved but unallocated: 1.20 GiB
+```
+
+Conclusion: for the current 35B-A3B hpZ8, 32k-context, microbatch-1 recipe,
+gradient checkpointing is not optional. It almost certainly costs extra
+recompute, but disabling it exceeds 80GB H100 memory before a training step can
+complete.
 
 Both installed LLaMA-Factory `0.9.5` and the upstream `main` overlay include the
 WSD scheduler hook. Without explicit `lr_scheduler_kwargs`, the local

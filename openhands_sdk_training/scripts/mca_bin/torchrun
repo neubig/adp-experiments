@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${MCA_PYTHON:-}" ]]; then
+  echo "MCA_PYTHON must point to the MCA virtualenv python" >&2
+  exit 2
+fi
+
+exec "${MCA_PYTHON}" -m torch.distributed.run "$@"
