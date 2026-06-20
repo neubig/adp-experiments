@@ -8,6 +8,8 @@ Current contents:
 - `openhands_sdk_training/`: reproduce the original Qwen3.5 0.8B
   LLaMA-Factory run and track the current Qwen3.5 4B/9B OpenHands SDK
   condenser SFT experiments.
+- `codescout_rl/`: smoke-test notes for Codescout RL through Platoon/AReaL on
+  a small Qwen3 model.
 
 ## Local Workspace Convention
 

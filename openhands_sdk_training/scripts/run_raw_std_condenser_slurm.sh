@@ -13,6 +13,11 @@ OUT_ROOT=${ADP_OUT_ROOT:-$EXP_ROOT/datasets/software_agent_condenser_24k}
 OUT_DIR=$OUT_ROOT/$DATASET
 LOG_DIR=$OUT_ROOT/logs
 FULL_SFT_DIR=$OUT_DIR/full_sft
+MAX_TOKENS=${ADP_MAX_TOKENS:-24000}
+TOKEN_LABEL=${ADP_TOKEN_LABEL:-}
+if [ -z "$TOKEN_LABEL" ]; then
+  TOKEN_LABEL=$((MAX_TOKENS / 1000))k
+fi
 
 mkdir -p "$OUT_DIR" "$LOG_DIR" "$FULL_SFT_DIR"
 
@@ -32,8 +37,9 @@ if [ -z "${LLM_API_KEY:-}" ]; then
 fi
 
 RAW_JSONL=$OUT_DIR/full_raw.jsonl
+ATIF_JSONL=$OUT_DIR/full_atif.jsonl
 STD_JSONL=$OUT_DIR/full_std.jsonl
-CONDENSER_JSONL=$FULL_SFT_DIR/full_sft_openhands_sdk_condensed_24k.jsonl
+CONDENSER_JSONL=$FULL_SFT_DIR/full_sft_openhands_sdk_condensed_${TOKEN_LABEL}.jsonl
 MANIFEST=$OUT_DIR/manifest.json
 
 started_at=$(date -Is)
@@ -42,6 +48,8 @@ echo "repo=$REPO"
 echo "out_dir=$OUT_DIR"
 echo "started_at=$started_at"
 echo "llm_model=$LLM_MODEL"
+echo "max_tokens=$MAX_TOKENS"
+echo "token_label=$TOKEN_LABEL"
 echo "python=$PYTHON"
 repo_branch=$(git -C "$REPO" branch --show-current 2>/dev/null || true)
 repo_commit=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || true)
@@ -82,10 +90,14 @@ else
 fi
 
 if [ -s "$STD_JSONL" ]; then
+  atif_status=0
+  atif_lines=$(wc -l < "$ATIF_JSONL" 2>/dev/null || echo 0)
   std_status=0
   std_lines=$(wc -l < "$STD_JSONL" 2>/dev/null || echo 0)
   echo "std_status=0 std_lines=$std_lines reused=$STD_JSONL"
-else
+elif [ -f "$REPO/datasets/$DATASET/raw_to_standardized.py" ]; then
+  atif_status=0
+  atif_lines=0
   (
     cd "$REPO/datasets/$DATASET" || exit 1
     PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" raw_to_standardized.py < "$RAW_JSONL"
@@ -95,6 +107,38 @@ else
   echo "std_status=$std_status std_lines=$std_lines"
   if [ "$std_status" -ne 0 ] || [ "$std_lines" -eq 0 ]; then
     echo "raw_to_standardized failed or produced no rows" >&2
+    exit 1
+  fi
+  mv "$STD_JSONL.tmp" "$STD_JSONL"
+else
+  if [ -s "$ATIF_JSONL" ]; then
+    atif_status=0
+    atif_lines=$(wc -l < "$ATIF_JSONL" 2>/dev/null || echo 0)
+    echo "atif_status=0 atif_lines=$atif_lines reused=$ATIF_JSONL"
+  else
+    (
+      cd "$REPO/datasets/$DATASET" || exit 1
+      PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" raw_to_atif.py < "$RAW_JSONL"
+    ) > "$ATIF_JSONL.tmp" 2> "$LOG_DIR/${DATASET}.raw_to_atif.stderr"
+    atif_status=$?
+    atif_lines=$(wc -l < "$ATIF_JSONL.tmp" 2>/dev/null || echo 0)
+    echo "atif_status=$atif_status atif_lines=$atif_lines"
+    if [ "$atif_status" -ne 0 ] || [ "$atif_lines" -eq 0 ]; then
+      echo "raw_to_atif failed or produced no rows" >&2
+      exit 1
+    fi
+    mv "$ATIF_JSONL.tmp" "$ATIF_JSONL"
+  fi
+
+  (
+    cd "$REPO/datasets/$DATASET" || exit 1
+    PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" atif_to_std.py < "$ATIF_JSONL"
+  ) > "$STD_JSONL.tmp" 2> "$LOG_DIR/${DATASET}.atif_to_std.stderr"
+  std_status=$?
+  std_lines=$(wc -l < "$STD_JSONL.tmp" 2>/dev/null || echo 0)
+  echo "std_status=$std_status std_lines=$std_lines"
+  if [ "$std_status" -ne 0 ] || [ "$std_lines" -eq 0 ]; then
+    echo "atif_to_std failed or produced no rows" >&2
     exit 1
   fi
   mv "$STD_JSONL.tmp" "$STD_JSONL"
@@ -251,7 +295,7 @@ PY_INNER
       cd "$REPO" || exit 1
       MY_DATASET="$DATASET" PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" \
         agents/openhands_sdk/condensation_sft.py \
-          --max-tokens 24000 \
+          --max-tokens "$MAX_TOKENS" \
           --model "$LLM_MODEL" \
           --concurrency 8 \
           --chunk-size 8 \
@@ -277,11 +321,15 @@ cat > "$MANIFEST" <<JSON
   "finished_at": "$finished_at",
   "raw_lines": $raw_lines,
   "std_lines": $std_lines,
+  "atif_status": $atif_status,
+  "atif_lines": $atif_lines,
   "condensation_status": $cond_status,
   "condensation_lines": $cond_lines,
-  "max_tokens": 24000,
+  "max_tokens": $MAX_TOKENS,
+  "token_label": "$TOKEN_LABEL",
   "llm_model": "$LLM_MODEL",
   "raw_jsonl": "$RAW_JSONL",
+  "atif_jsonl": "$ATIF_JSONL",
   "std_jsonl": "$STD_JSONL",
   "condensed_openhands_sdk_jsonl": "$CONDENSER_JSONL"
 }
