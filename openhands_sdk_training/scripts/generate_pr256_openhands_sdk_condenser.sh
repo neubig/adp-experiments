@@ -205,8 +205,7 @@ PY
     echo "condensation_status=0 condensation_lines=$cond_lines resumed_complete=1"
     mv "$CONDENSER_TMP" "$CONDENSER_JSONL"
   else
-    echo "concurrency=${ADP_CONDENSER_CONCURRENCY:-96}"
-    echo "chunk_size=${ADP_CONDENSER_CHUNK_SIZE:-192}"
+    echo "max_in_flight_rows=${ADP_CONDENSER_MAX_IN_FLIGHT_ROWS:-500}"
     echo "llm_concurrency=${ADP_CONDENSER_LLM_CONCURRENCY:-50}"
     echo "row_timeout=${ADP_CONDENSER_ROW_TIMEOUT:-1800}"
     (
@@ -215,8 +214,7 @@ PY
         agents/openhands_sdk/condensation_sft.py \
           --max-tokens "$MAX_TOKENS" \
           --model "$LLM_MODEL" \
-          --concurrency "${ADP_CONDENSER_CONCURRENCY:-96}" \
-          --chunk-size "${ADP_CONDENSER_CHUNK_SIZE:-192}" \
+          --max-in-flight-rows "${ADP_CONDENSER_MAX_IN_FLIGHT_ROWS:-500}" \
           --llm-concurrency "${ADP_CONDENSER_LLM_CONCURRENCY:-50}" \
           --row-timeout "${ADP_CONDENSER_ROW_TIMEOUT:-1800}" \
           --continue-on-error \
