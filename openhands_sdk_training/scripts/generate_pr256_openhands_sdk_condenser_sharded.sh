@@ -34,6 +34,9 @@ WORKERS=${ADP_CONDENSER_WORKERS:-12}
 LLM_CONCURRENCY=${ADP_CONDENSER_LLM_CONCURRENCY:-5}
 MAX_IN_FLIGHT_ROWS=${ADP_CONDENSER_MAX_IN_FLIGHT_ROWS:-50}
 ROW_TIMEOUT=${ADP_CONDENSER_ROW_TIMEOUT:-1800}
+LLM_RETRIES=${ADP_CONDENSER_LLM_RETRIES:-3}
+LLM_RETRY_MIN_WAIT=${ADP_CONDENSER_LLM_RETRY_MIN_WAIT:-1}
+LLM_RETRY_MAX_WAIT=${ADP_CONDENSER_LLM_RETRY_MAX_WAIT:-30}
 
 mkdir -p "$OUT_DIR" "$LOG_DIR" "$FULL_SFT_DIR" "$SPLIT_DIR" "$PART_DIR"
 
@@ -80,6 +83,9 @@ echo "llm_concurrency_per_worker=$LLM_CONCURRENCY"
 echo "total_llm_concurrency=$((WORKERS * LLM_CONCURRENCY))"
 echo "max_in_flight_rows_per_worker=$MAX_IN_FLIGHT_ROWS"
 echo "row_timeout=$ROW_TIMEOUT"
+echo "llm_retries=$LLM_RETRIES"
+echo "llm_retry_min_wait=$LLM_RETRY_MIN_WAIT"
+echo "llm_retry_max_wait=$LLM_RETRY_MAX_WAIT"
 
 EXPECTED_ADP_BRANCH=${ADP_EXPECTED_BRANCH:-main}
 if [ -n "$EXPECTED_ADP_BRANCH" ] && [ "$repo_branch" != "$EXPECTED_ADP_BRANCH" ]; then
@@ -281,6 +287,9 @@ PY
           --max-in-flight-rows "$MAX_IN_FLIGHT_ROWS" \
           --llm-concurrency "$LLM_CONCURRENCY" \
           --row-timeout "$ROW_TIMEOUT" \
+          --llm-retries "$LLM_RETRIES" \
+          --llm-retry-min-wait "$LLM_RETRY_MIN_WAIT" \
+          --llm-retry-max-wait "$LLM_RETRY_MAX_WAIT" \
           --continue-on-error \
           < "$shard_input" >> "$part_tmp" 2>> "$log_file"
     ) &
@@ -358,6 +367,9 @@ cat > "$MANIFEST" <<JSON
   "llm_model": "$LLM_MODEL",
   "workers": $WORKERS,
   "llm_concurrency_per_worker": $LLM_CONCURRENCY,
+  "llm_retries": $LLM_RETRIES,
+  "llm_retry_min_wait": $LLM_RETRY_MIN_WAIT,
+  "llm_retry_max_wait": $LLM_RETRY_MAX_WAIT,
   "max_in_flight_rows_per_worker": $MAX_IN_FLIGHT_ROWS,
   "std_jsonl": "$STD_JSONL",
   "condensed_openhands_sdk_jsonl": "$CONDENSER_JSONL"
