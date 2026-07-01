@@ -55,6 +55,8 @@ fi
 STD_JSONL=$STD_ROOT/$DATASET/full_std.jsonl
 CONDENSER_JSONL=$FULL_SFT_DIR/full_sft_openhands_sdk_condensed_${TOKEN_LABEL}.jsonl
 CONDENSER_TMP=$CONDENSER_JSONL.tmp
+SOURCE_ROW_HASH_MARKER=$OUT_DIR/.use_source_row_hash
+RESUME_STD_JSONL=$OUT_DIR/full_std.resume.jsonl
 MANIFEST=$OUT_DIR/manifest.json
 
 started_at=$(date -Is)
@@ -104,15 +106,145 @@ if [ -s "$CONDENSER_JSONL" ]; then
   cond_lines=$(wc -l < "$CONDENSER_JSONL" 2>/dev/null || echo 0)
   echo "condensation_status=0 condensation_lines=$cond_lines reused=$CONDENSER_JSONL"
 else
-  if [ -e "$CONDENSER_TMP" ]; then
-    archived="$CONDENSER_TMP.pre_sharded_$(date +%Y%m%dT%H%M%S)"
-    mv "$CONDENSER_TMP" "$archived"
-    echo "archived_existing_tmp=$archived"
+  : > "$SOURCE_ROW_HASH_MARKER"
+  if [ -e "$SOURCE_ROW_HASH_MARKER" ]; then
+    export ADP_USE_SOURCE_ROW_HASH=1
+    echo "source_row_hash=1"
   fi
+
+  part_records=0
+  merge_parts_tmp=$CONDENSER_TMP.merge_parts
+  : > "$merge_parts_tmp"
+  if [ -s "$CONDENSER_TMP" ]; then
+    cat "$CONDENSER_TMP" >> "$merge_parts_tmp"
+  fi
+  for part in "$PART_DIR"/part_*.jsonl "$PART_DIR"/part_*.jsonl.tmp; do
+    if [ -s "$part" ]; then
+      cat "$part" >> "$merge_parts_tmp"
+      part_records=$((part_records + 1))
+    fi
+  done
+  if [ -s "$merge_parts_tmp" ]; then
+    mv "$merge_parts_tmp" "$CONDENSER_TMP"
+    echo "resume_merged_part_files=$part_records"
+  else
+    rm -f "$merge_parts_tmp"
+  fi
+
+  if [ -s "$CONDENSER_TMP" ]; then
+    PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" - "$STD_JSONL" "$CONDENSER_TMP" "$RESUME_STD_JSONL" <<'PY'
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+std_path = Path(sys.argv[1])
+partial_path = Path(sys.argv[2])
+out_path = Path(sys.argv[3])
+use_source_row_hash = os.getenv("ADP_USE_SOURCE_ROW_HASH") == "1"
+
+dedup_path = partial_path.with_name(partial_path.name + ".dedup")
+seen_record_ids = set()
+partial_sources = set()
+completed_sources = set()
+input_records = 0
+kept_records = 0
+deduped_records = 0
+invalid_records = 0
+with partial_path.open(errors="replace") as handle:
+    with dedup_path.open("w") as dedup_handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            input_records += 1
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                invalid_records += 1
+                continue
+            metadata = row.get("metadata", {})
+            source_ids = {
+                source_id
+                for source_id in (
+                    metadata.get("source_row_id"),
+                    metadata.get("source_trajectory_id"),
+                )
+                if source_id
+            }
+            record_id = row.get("id")
+            dedup_key = record_id or json.dumps(row, sort_keys=True, ensure_ascii=False)
+            if dedup_key in seen_record_ids:
+                deduped_records += 1
+                continue
+            seen_record_ids.add(dedup_key)
+            if source_ids:
+                partial_sources.update(source_ids)
+                if metadata.get("record_type") == "trajectory":
+                    completed_sources.update(source_ids)
+            dedup_handle.write(line if line.endswith("\n") else line + "\n")
+            kept_records += 1
+dedup_path.replace(partial_path)
+
+def source_row_id(row, trajectory_id):
+    canonical = json.dumps(
+        row,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return f"{trajectory_id}__row_{digest}"
+
+def std_source_ids(row):
+    trajectory_id = row.get("trajectory_id") or row.get("id") or row.get("session_id")
+    source_ids = {trajectory_id} if trajectory_id else set()
+    if use_source_row_hash and trajectory_id:
+        source_ids.add(source_row_id(row, trajectory_id))
+    return source_ids
+
+with std_path.open() as in_handle, out_path.open("w") as out_handle:
+    kept = skipped = missing_id = 0
+    for line in in_handle:
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        source_ids = std_source_ids(row)
+        if source_ids and completed_sources.intersection(source_ids):
+            skipped += 1
+            continue
+        if not source_ids:
+            missing_id += 1
+        out_handle.write(line if line.endswith("\n") else line + "\n")
+        kept += 1
+print(
+    "resume_processed="
+    f"{len(completed_sources)} resume_partial_sources={len(partial_sources)} "
+    f"resume_skipped={skipped} resume_remaining={kept} "
+    f"resume_missing_source_id={missing_id} partial_records={input_records} "
+    f"partial_kept_records={kept_records} partial_deduped_records={deduped_records} "
+    f"partial_invalid_records={invalid_records}",
+    flush=True,
+)
+PY
+    COND_INPUT="$RESUME_STD_JSONL"
+  else
+    : > "$CONDENSER_TMP"
+    COND_INPUT="$STD_JSONL"
+  fi
+
+  remaining_lines=$(wc -l < "$COND_INPUT" 2>/dev/null || echo 0)
+  echo "remaining_lines=$remaining_lines"
+  if [ "$remaining_lines" -eq 0 ]; then
+    cond_status=0
+    cond_lines=$(wc -l < "$CONDENSER_TMP" 2>/dev/null || echo 0)
+    echo "condensation_status=0 condensation_lines=$cond_lines resumed_complete=1"
+    mv "$CONDENSER_TMP" "$CONDENSER_JSONL"
+  else
   rm -f "$SPLIT_DIR"/std_shard_*.jsonl
   rm -f "$PART_DIR"/part_*.jsonl.tmp "$PART_DIR"/part_*.jsonl
 
-  "$PYTHON" - "$STD_JSONL" "$SPLIT_DIR" "$WORKERS" <<'PY'
+  "$PYTHON" - "$COND_INPUT" "$SPLIT_DIR" "$WORKERS" <<'PY'
 import pathlib
 import sys
 
@@ -165,12 +297,34 @@ PY
   done
 
   if [ "$cond_status" -eq 0 ]; then
-    rm -f "$CONDENSER_TMP"
     for shard in $(seq 0 $((WORKERS - 1))); do
       shard_id=$(printf "%02d" "$shard")
       cat "$PART_DIR/part_${shard_id}.jsonl.tmp" >> "$CONDENSER_TMP"
       mv "$PART_DIR/part_${shard_id}.jsonl.tmp" "$PART_DIR/part_${shard_id}.jsonl"
     done
+    PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" - "$CONDENSER_TMP" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+partial_path = Path(sys.argv[1])
+dedup_path = partial_path.with_name(partial_path.name + ".dedup")
+seen = set()
+with partial_path.open(errors="replace") as in_handle, dedup_path.open("w") as out_handle:
+    for line in in_handle:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        key = row.get("id") or json.dumps(row, sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            continue
+        seen.add(key)
+        out_handle.write(line if line.endswith("\n") else line + "\n")
+dedup_path.replace(partial_path)
+PY
     cond_lines=$(wc -l < "$CONDENSER_TMP" 2>/dev/null || echo 0)
     echo "condensation_status=$cond_status condensation_lines=$cond_lines"
     if [ "$cond_lines" -gt 0 ]; then
@@ -183,6 +337,7 @@ PY
     cond_lines=$(find "$PART_DIR" -name 'part_*.jsonl.tmp' -print0 | xargs -0 cat 2>/dev/null | wc -l)
     echo "condensation_status=$cond_status partial_condensation_lines=$cond_lines" >&2
     echo "one or more shards failed; leaving part files in $PART_DIR" >&2
+  fi
   fi
 fi
 
