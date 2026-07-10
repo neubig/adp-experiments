@@ -9,6 +9,7 @@ fi
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=${ADP_REPO:-$DEFAULT_REPO}
 EXP_ROOT=${ADP_EXP_ROOT:-/home/gneubig/exp/adp}
+PYTHON=${ADP_PYTHON:-}
 RUN_ROOT=${ADP_RUN_ROOT:-$EXP_ROOT/runs/all_datasets_pr256}
 STD_OUT_ROOT=${ADP_STD_OUT_ROOT:-$EXP_ROOT/datasets/all_agent_standardized_pr256}
 ARRAY_LIMIT=${ADP_ARRAY_LIMIT:-4}
@@ -72,6 +73,7 @@ echo "array_job_id=\${SLURM_ARRAY_JOB_ID:-}"
 echo "array_task_id=\${SLURM_ARRAY_TASK_ID:-}"
 ADP_REPO="$REPO" \\
 ADP_EXP_ROOT="$EXP_ROOT" \\
+ADP_PYTHON="\${ADP_PYTHON:-$PYTHON}" \\
 ADP_STD_OUT_ROOT="$STD_OUT_ROOT" \\
 "$SCRIPT_DIR/run_standardize_dataset_slurm.sh" "\$DATASET"
 SBATCH
@@ -94,6 +96,7 @@ echo "array_job_id=\${SLURM_ARRAY_JOB_ID:-}"
 echo "array_task_id=\${SLURM_ARRAY_TASK_ID:-}"
 ADP_REPO="$REPO" \\
 ADP_EXP_ROOT="$EXP_ROOT" \\
+ADP_PYTHON="\${ADP_PYTHON:-$PYTHON}" \\
 ADP_STD_OUT_ROOT="$STD_OUT_ROOT" \\
 ADP_TOKEN_LABEL="\${ADP_TOKEN_LABEL:?}" \\
 ADP_MAX_TOKENS="\${ADP_MAX_TOKENS:?}" \\

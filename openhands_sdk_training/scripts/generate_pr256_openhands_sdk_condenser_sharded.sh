@@ -27,8 +27,18 @@ OUT_ROOT=${ADP_COND_OUT_ROOT:-$EXP_ROOT/datasets/software_agent_condenser_${TOKE
 OUT_DIR=$OUT_ROOT/$DATASET
 LOG_DIR=$OUT_ROOT/logs
 FULL_SFT_DIR=$OUT_DIR/full_sft
+SPLIT_DIR=$OUT_DIR/shards/std
+PART_DIR=$FULL_SFT_DIR/shards
 
-mkdir -p "$OUT_DIR" "$LOG_DIR" "$FULL_SFT_DIR"
+WORKERS=${ADP_CONDENSER_WORKERS:-12}
+LLM_CONCURRENCY=${ADP_CONDENSER_LLM_CONCURRENCY:-5}
+MAX_IN_FLIGHT_ROWS=${ADP_CONDENSER_MAX_IN_FLIGHT_ROWS:-50}
+ROW_TIMEOUT=${ADP_CONDENSER_ROW_TIMEOUT:-1800}
+LLM_RETRIES=${ADP_CONDENSER_LLM_RETRIES:-3}
+LLM_RETRY_MIN_WAIT=${ADP_CONDENSER_LLM_RETRY_MIN_WAIT:-1}
+LLM_RETRY_MAX_WAIT=${ADP_CONDENSER_LLM_RETRY_MAX_WAIT:-30}
+
+mkdir -p "$OUT_DIR" "$LOG_DIR" "$FULL_SFT_DIR" "$SPLIT_DIR" "$PART_DIR"
 
 if [ -f "$EXP_ROOT/.env" ]; then
   set -a
@@ -49,6 +59,7 @@ STD_JSONL=$STD_ROOT/$DATASET/full_std.jsonl
 CONDENSER_JSONL=$FULL_SFT_DIR/full_sft_openhands_sdk_condensed_${TOKEN_LABEL}.jsonl
 CONDENSER_TMP=$CONDENSER_JSONL.tmp
 SOURCE_ROW_HASH_MARKER=$OUT_DIR/.use_source_row_hash
+RESUME_STD_JSONL=$OUT_DIR/full_std.resume.jsonl
 MANIFEST=$OUT_DIR/manifest.json
 
 started_at=$(date -Is)
@@ -67,6 +78,14 @@ echo "llm_model=$LLM_MODEL"
 echo "python=$PYTHON"
 echo "max_tokens=$MAX_TOKENS"
 echo "token_label=$TOKEN_LABEL"
+echo "workers=$WORKERS"
+echo "llm_concurrency_per_worker=$LLM_CONCURRENCY"
+echo "total_llm_concurrency=$((WORKERS * LLM_CONCURRENCY))"
+echo "max_in_flight_rows_per_worker=$MAX_IN_FLIGHT_ROWS"
+echo "row_timeout=$ROW_TIMEOUT"
+echo "llm_retries=$LLM_RETRIES"
+echo "llm_retry_min_wait=$LLM_RETRY_MIN_WAIT"
+echo "llm_retry_max_wait=$LLM_RETRY_MAX_WAIT"
 
 EXPECTED_ADP_BRANCH=${ADP_EXPECTED_BRANCH:-main}
 if [ -n "$EXPECTED_ADP_BRANCH" ] && [ "$repo_branch" != "$EXPECTED_ADP_BRANCH" ]; then
@@ -93,14 +112,31 @@ if [ -s "$CONDENSER_JSONL" ]; then
   cond_lines=$(wc -l < "$CONDENSER_JSONL" 2>/dev/null || echo 0)
   echo "condensation_status=0 condensation_lines=$cond_lines reused=$CONDENSER_JSONL"
 else
-  RESUME_STD_JSONL="$OUT_DIR/full_std.resume.jsonl"
-  if [ ! -e "$CONDENSER_TMP" ]; then
-    : > "$SOURCE_ROW_HASH_MARKER"
-  fi
+  : > "$SOURCE_ROW_HASH_MARKER"
   if [ -e "$SOURCE_ROW_HASH_MARKER" ]; then
     export ADP_USE_SOURCE_ROW_HASH=1
     echo "source_row_hash=1"
   fi
+
+  part_records=0
+  merge_parts_tmp=$CONDENSER_TMP.merge_parts
+  : > "$merge_parts_tmp"
+  if [ -s "$CONDENSER_TMP" ]; then
+    cat "$CONDENSER_TMP" >> "$merge_parts_tmp"
+  fi
+  for part in "$PART_DIR"/part_*.jsonl "$PART_DIR"/part_*.jsonl.tmp; do
+    if [ -s "$part" ]; then
+      cat "$part" >> "$merge_parts_tmp"
+      part_records=$((part_records + 1))
+    fi
+  done
+  if [ -s "$merge_parts_tmp" ]; then
+    mv "$merge_parts_tmp" "$CONDENSER_TMP"
+    echo "resume_merged_part_files=$part_records"
+  else
+    rm -f "$merge_parts_tmp"
+  fi
+
   if [ -s "$CONDENSER_TMP" ]; then
     PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" - "$STD_JSONL" "$CONDENSER_TMP" "$RESUME_STD_JSONL" <<'PY'
 import hashlib
@@ -134,19 +170,24 @@ with partial_path.open(errors="replace") as handle:
                 invalid_records += 1
                 continue
             metadata = row.get("metadata", {})
-            source_id = metadata.get("source_row_id") or metadata.get(
-                "source_trajectory_id"
-            )
+            source_ids = {
+                source_id
+                for source_id in (
+                    metadata.get("source_row_id"),
+                    metadata.get("source_trajectory_id"),
+                )
+                if source_id
+            }
             record_id = row.get("id")
             dedup_key = record_id or json.dumps(row, sort_keys=True, ensure_ascii=False)
             if dedup_key in seen_record_ids:
                 deduped_records += 1
                 continue
             seen_record_ids.add(dedup_key)
-            if source_id:
-                partial_sources.add(source_id)
+            if source_ids:
+                partial_sources.update(source_ids)
                 if metadata.get("record_type") == "trajectory":
-                    completed_sources.add(source_id)
+                    completed_sources.update(source_ids)
             dedup_handle.write(line if line.endswith("\n") else line + "\n")
             kept_records += 1
 dedup_path.replace(partial_path)
@@ -161,11 +202,12 @@ def source_row_id(row, trajectory_id):
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     return f"{trajectory_id}__row_{digest}"
 
-def std_source_id(row):
+def std_source_ids(row):
     trajectory_id = row.get("trajectory_id") or row.get("id") or row.get("session_id")
+    source_ids = {trajectory_id} if trajectory_id else set()
     if use_source_row_hash and trajectory_id:
-        return source_row_id(row, trajectory_id)
-    return trajectory_id
+        source_ids.add(source_row_id(row, trajectory_id))
+    return source_ids
 
 with std_path.open() as in_handle, out_path.open("w") as out_handle:
     kept = skipped = missing_id = 0
@@ -173,11 +215,11 @@ with std_path.open() as in_handle, out_path.open("w") as out_handle:
         if not line.strip():
             continue
         row = json.loads(line)
-        source_id = std_source_id(row)
-        if source_id and source_id in completed_sources:
+        source_ids = std_source_ids(row)
+        if source_ids and completed_sources.intersection(source_ids):
             skipped += 1
             continue
-        if not source_id:
+        if not source_ids:
             missing_id += 1
         out_handle.write(line if line.endswith("\n") else line + "\n")
         kept += 1
@@ -205,24 +247,71 @@ PY
     echo "condensation_status=0 condensation_lines=$cond_lines resumed_complete=1"
     mv "$CONDENSER_TMP" "$CONDENSER_JSONL"
   else
-    echo "max_in_flight_rows=${ADP_CONDENSER_MAX_IN_FLIGHT_ROWS:-500}"
-    echo "llm_concurrency=${ADP_CONDENSER_LLM_CONCURRENCY:-50}"
-    echo "row_timeout=${ADP_CONDENSER_ROW_TIMEOUT:-1800}"
+  rm -f "$SPLIT_DIR"/std_shard_*.jsonl
+  rm -f "$PART_DIR"/part_*.jsonl.tmp "$PART_DIR"/part_*.jsonl
+
+  "$PYTHON" - "$COND_INPUT" "$SPLIT_DIR" "$WORKERS" <<'PY'
+import pathlib
+import sys
+
+src = pathlib.Path(sys.argv[1])
+out_dir = pathlib.Path(sys.argv[2])
+workers = int(sys.argv[3])
+handles = [
+    (out_dir / f"std_shard_{idx:02d}.jsonl").open("w", encoding="utf-8")
+    for idx in range(workers)
+]
+try:
+    with src.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle):
+            handles[line_no % workers].write(line)
+finally:
+    for handle in handles:
+        handle.close()
+PY
+
+  pids=()
+  for shard in $(seq 0 $((WORKERS - 1))); do
+    shard_id=$(printf "%02d" "$shard")
+    shard_input="$SPLIT_DIR/std_shard_${shard_id}.jsonl"
+    part_tmp="$PART_DIR/part_${shard_id}.jsonl.tmp"
+    log_file="$LOG_DIR/${DATASET}.shard_${shard_id}.openhands_sdk_condensation.stderr"
     (
       cd "$REPO"
-      MY_DATASET="$DATASET" PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" \
-        agents/openhands_sdk/condensation_sft.py \
+      ADP_USE_SOURCE_ROW_HASH=1 \
+      MY_DATASET="$DATASET" \
+      PYTHONPATH="$REPO:${PYTHONPATH:-}" \
+        "$PYTHON" agents/openhands_sdk/condensation_sft.py \
           --max-tokens "$MAX_TOKENS" \
           --model "$LLM_MODEL" \
-          --max-in-flight-rows "${ADP_CONDENSER_MAX_IN_FLIGHT_ROWS:-500}" \
-          --llm-concurrency "${ADP_CONDENSER_LLM_CONCURRENCY:-50}" \
-          --row-timeout "${ADP_CONDENSER_ROW_TIMEOUT:-1800}" \
+          --max-in-flight-rows "$MAX_IN_FLIGHT_ROWS" \
+          --llm-concurrency "$LLM_CONCURRENCY" \
+          --row-timeout "$ROW_TIMEOUT" \
+          --llm-retries "$LLM_RETRIES" \
+          --llm-retry-min-wait "$LLM_RETRY_MIN_WAIT" \
+          --llm-retry-max-wait "$LLM_RETRY_MAX_WAIT" \
           --continue-on-error \
-          < "$COND_INPUT"
-    ) >> "$CONDENSER_TMP" 2>> "$LOG_DIR/${DATASET}.openhands_sdk_condensation.stderr"
-    cond_status=$?
-    if [ "$cond_status" -eq 0 ]; then
-      PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" - "$CONDENSER_TMP" <<'PY'
+          < "$shard_input" >> "$part_tmp" 2>> "$log_file"
+    ) &
+    pids+=("$!")
+    pid_index=$((${#pids[@]} - 1))
+    echo "started_shard=$shard_id pid=${pids[$pid_index]} input=$shard_input output=$part_tmp"
+  done
+
+  cond_status=0
+  for pid in "${pids[@]}"; do
+    if ! wait "$pid"; then
+      cond_status=1
+    fi
+  done
+
+  if [ "$cond_status" -eq 0 ]; then
+    for shard in $(seq 0 $((WORKERS - 1))); do
+      shard_id=$(printf "%02d" "$shard")
+      cat "$PART_DIR/part_${shard_id}.jsonl.tmp" >> "$CONDENSER_TMP"
+      mv "$PART_DIR/part_${shard_id}.jsonl.tmp" "$PART_DIR/part_${shard_id}.jsonl"
+    done
+    PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" - "$CONDENSER_TMP" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -245,14 +334,19 @@ with partial_path.open(errors="replace") as in_handle, dedup_path.open("w") as o
         out_handle.write(line if line.endswith("\n") else line + "\n")
 dedup_path.replace(partial_path)
 PY
-    fi
     cond_lines=$(wc -l < "$CONDENSER_TMP" 2>/dev/null || echo 0)
     echo "condensation_status=$cond_status condensation_lines=$cond_lines"
-    if [ "$cond_status" -eq 0 ] && [ "$cond_lines" -gt 0 ]; then
+    if [ "$cond_lines" -gt 0 ]; then
       mv "$CONDENSER_TMP" "$CONDENSER_JSONL"
     else
-      echo "condensation_sft failed or produced no rows; keeping partial $CONDENSER_TMP" >&2
+      echo "condensation_sft produced no rows; keeping empty partial $CONDENSER_TMP" >&2
+      cond_status=1
     fi
+  else
+    cond_lines=$(find "$PART_DIR" -name 'part_*.jsonl.tmp' -print0 | xargs -0 cat 2>/dev/null | wc -l)
+    echo "condensation_status=$cond_status partial_condensation_lines=$cond_lines" >&2
+    echo "one or more shards failed; leaving part files in $PART_DIR" >&2
+  fi
   fi
 fi
 
@@ -271,6 +365,12 @@ cat > "$MANIFEST" <<JSON
   "max_tokens": $MAX_TOKENS,
   "token_label": "$TOKEN_LABEL",
   "llm_model": "$LLM_MODEL",
+  "workers": $WORKERS,
+  "llm_concurrency_per_worker": $LLM_CONCURRENCY,
+  "llm_retries": $LLM_RETRIES,
+  "llm_retry_min_wait": $LLM_RETRY_MIN_WAIT,
+  "llm_retry_max_wait": $LLM_RETRY_MAX_WAIT,
+  "max_in_flight_rows_per_worker": $MAX_IN_FLIGHT_ROWS,
   "std_jsonl": "$STD_JSONL",
   "condensed_openhands_sdk_jsonl": "$CONDENSER_JSONL"
 }

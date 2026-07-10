@@ -45,11 +45,40 @@ if [ ! -d "$REPO/datasets/$DATASET" ]; then
   exit 1
 fi
 
+install_dataset_requirements() {
+  req_file=$REPO/datasets/$DATASET/requirements.txt
+  if [ ! -s "$req_file" ]; then
+    return 0
+  fi
+  req_hash=$(sha256sum "$req_file" | awk '{print $1}')
+  marker_dir=$REPO/.venv/.adp_dataset_requirements
+  marker=$marker_dir/$DATASET.$req_hash
+  lock_file=$marker_dir/install.lock
+  mkdir -p "$marker_dir"
+  if [ -e "$marker" ]; then
+    echo "dataset_requirements=already_installed file=$req_file"
+    return 0
+  fi
+  (
+    flock 9
+    if [ ! -e "$marker" ]; then
+      echo "dataset_requirements=installing file=$req_file"
+      if "$PYTHON" -m pip --version >/dev/null 2>&1; then
+        "$PYTHON" -m pip install -r "$req_file"
+      else
+        uv pip install --python "$PYTHON" -r "$req_file"
+      fi
+      touch "$marker"
+    fi
+  ) 9>"$lock_file"
+}
+
 if [ -s "$RAW_JSONL" ]; then
   extract_status=0
   raw_lines=$(wc -l < "$RAW_JSONL" 2>/dev/null || echo 0)
   echo "extract_status=0 raw_lines=$raw_lines reused=$RAW_JSONL"
 else
+  install_dataset_requirements
   (
     cd "$REPO/datasets/$DATASET" || exit 1
     env -u PYTHONPATH "$PYTHON" extract_raw.py
@@ -59,6 +88,7 @@ else
   echo "extract_status=$extract_status raw_lines=$raw_lines"
   if [ "$extract_status" -ne 0 ] || [ "$raw_lines" -eq 0 ]; then
     echo "extract_raw failed or produced no rows" >&2
+    rm -f "$RAW_JSONL.tmp"
     exit 1
   fi
   mv "$RAW_JSONL.tmp" "$RAW_JSONL"
@@ -82,6 +112,7 @@ elif [ -f "$REPO/datasets/$DATASET/raw_to_standardized.py" ]; then
   echo "std_status=$std_status std_lines=$std_lines"
   if [ "$std_status" -ne 0 ] || [ "$std_lines" -eq 0 ]; then
     echo "raw_to_standardized failed or produced no rows" >&2
+    rm -f "$STD_JSONL.tmp"
     exit 1
   fi
   mv "$STD_JSONL.tmp" "$STD_JSONL"
@@ -100,6 +131,7 @@ else
     echo "atif_status=$atif_status atif_lines=$atif_lines"
     if [ "$atif_status" -ne 0 ] || [ "$atif_lines" -eq 0 ]; then
       echo "raw_to_atif failed or produced no rows" >&2
+      rm -f "$ATIF_JSONL.tmp"
       exit 1
     fi
     mv "$ATIF_JSONL.tmp" "$ATIF_JSONL"
@@ -114,6 +146,7 @@ else
   echo "std_status=$std_status std_lines=$std_lines"
   if [ "$std_status" -ne 0 ] || [ "$std_lines" -eq 0 ]; then
     echo "atif_to_std failed or produced no rows" >&2
+    rm -f "$STD_JSONL.tmp"
     exit 1
   fi
   mv "$STD_JSONL.tmp" "$STD_JSONL"

@@ -135,14 +135,16 @@ PY_INNER
     echo "condensation_status=0 condensation_lines=$cond_lines resumed_complete=1"
     mv "$CONDENSER_TMP" "$CONDENSER_JSONL"
   else
+    echo "max_in_flight_rows=${ADP_CONDENSER_MAX_IN_FLIGHT_ROWS:-8}"
+    echo "llm_concurrency=${ADP_CONDENSER_LLM_CONCURRENCY:-8}"
     (
       cd "$REPO" || exit 1
       MY_DATASET="$DATASET" PYTHONPATH="$REPO:${PYTHONPATH:-}" "$PYTHON" \
         agents/openhands_sdk/condensation_sft.py \
           --max-tokens "$MAX_TOKENS" \
           --model "$LLM_MODEL" \
-          --concurrency "${ADP_CONDENSER_CONCURRENCY:-8}" \
-          --chunk-size "${ADP_CONDENSER_CHUNK_SIZE:-8}" \
+          --max-in-flight-rows "${ADP_CONDENSER_MAX_IN_FLIGHT_ROWS:-8}" \
+          --llm-concurrency "${ADP_CONDENSER_LLM_CONCURRENCY:-8}" \
           --continue-on-error \
           < "$COND_INPUT"
     ) >> "$CONDENSER_TMP" 2>> "$LOG_DIR/${DATASET}.openhands_sdk_condensation.stderr"
