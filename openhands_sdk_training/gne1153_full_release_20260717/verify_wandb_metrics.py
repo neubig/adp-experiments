@@ -32,10 +32,16 @@ def main() -> None:
     run = wandb.Api(timeout=60).run(f"{args.entity}/{args.project}/{args.run_id}")
     latest_loss = None
     rows_with_loss = 0
-    for row in run.scan_history(keys=["_step", "train/loss", "loss", "train/global_step"]):
-        if row.get("train/loss") is not None or row.get("loss") is not None:
+    for loss_key in ("train/loss", "loss"):
+        for row in run.scan_history(keys=["_step", loss_key]):
+            if row.get(loss_key) is None:
+                continue
             rows_with_loss += 1
-            latest_loss = {key: json_safe(value) for key, value in row.items()}
+            candidate = {key: json_safe(value) for key, value in row.items()}
+            if latest_loss is None or candidate.get("_step", -1) >= latest_loss.get(
+                "_step", -1
+            ):
+                latest_loss = candidate
     result = {
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "entity": run.entity,
