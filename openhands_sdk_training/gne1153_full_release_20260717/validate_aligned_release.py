@@ -105,6 +105,7 @@ def main() -> None:
     manifest = json.loads(manifest_bytes)
     alignment_path = root / args.alignment_manifest_name
     alignment = json.loads(alignment_path.read_text())
+    expected_alignment_schema = 4 if args.alignment_manifest_name == "alignment_manifest_v4.json" else 3
     view = Path(alignment["dataset_view"])
     dataset_info = json.loads((view / "dataset_info.json").read_text())
 
@@ -114,6 +115,7 @@ def main() -> None:
     assert manifest["adapted_train_rows"] == 9_196_689
     assert len(manifest["datasets"]) == 52
     assert alignment["status"] == "alignment_complete"
+    assert alignment["schema_version"] == expected_alignment_schema
     assert alignment["source_config_count"] == 52
     assert alignment["source_adapted_rows"] == 9_196_689
     assert alignment["nonempty_config_count"] == 51
@@ -150,6 +152,7 @@ def main() -> None:
         "validation": "passed",
         "manifest_sha256": sha256_file(root / "manifest.json"),
         "alignment_manifest_sha256": sha256_file(alignment_path),
+        "alignment_schema_version": alignment["schema_version"],
         "dataset_info_sha256": sha256_file(view / "dataset_info.json"),
         "config_count": 52,
         "nonempty_config_count": 51,
