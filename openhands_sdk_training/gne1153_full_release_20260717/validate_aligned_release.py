@@ -95,13 +95,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--alignment-manifest-name", default="alignment_manifest_v3.json")
     args = parser.parse_args()
 
     root = args.dataset_root.resolve()
     manifest_bytes = (root / "manifest.json").read_bytes()
     manifest = json.loads(manifest_bytes)
-    alignment = json.loads((root / "alignment_manifest.json").read_text())
-    view = root.parent / "dataset_aligned"
+    alignment_path = root / args.alignment_manifest_name
+    alignment = json.loads(alignment_path.read_text())
+    view = Path(alignment["dataset_view"])
     dataset_info = json.loads((view / "dataset_info.json").read_text())
 
     assert manifest["release"]["revision"] == "eb95b66ca30ef071d5e49495d5d780c29f9aef7b"
@@ -123,10 +125,16 @@ def main() -> None:
     assert len(items) == 52
     eval_entry = dataset_info["adpv2_full24k_eval_500"]
     items.append(("adpv2_full24k_eval_500", eval_entry["file_name"], 500))
+    # Start the largest files first so validation cannot finish with one worker
+    # alone on a late 100+ GB shard.
+    items.sort(key=lambda item: Path(item[1]).stat().st_size, reverse=True)
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as pool:
         results = list(pool.map(validate_file, items))
     training_results = [item for item in results if item["dataset_name"] != "adpv2_full24k_eval_500"]
+    evaluation_result = next(
+        item for item in results if item["dataset_name"] == "adpv2_full24k_eval_500"
+    )
     assert sum(item["rows"] for item in training_results) == 9_196_689
 
     alignment_files = {item["destination"]: item for item in alignment["files"]}
@@ -139,12 +147,12 @@ def main() -> None:
     output = {
         "validation": "passed",
         "manifest_sha256": sha256_file(root / "manifest.json"),
-        "alignment_manifest_sha256": sha256_file(root / "alignment_manifest.json"),
+        "alignment_manifest_sha256": sha256_file(alignment_path),
         "dataset_info_sha256": sha256_file(view / "dataset_info.json"),
         "config_count": 52,
         "nonempty_config_count": 51,
         "training_rows": sum(item["rows"] for item in training_results),
-        "evaluation_rows": results[-1]["rows"],
+        "evaluation_rows": evaluation_result["rows"],
         "function_messages": sum(item["function_messages"] for item in results),
         "wrapped_function_messages": sum(item["wrapped_function_messages"] for item in results),
         "files": results,
