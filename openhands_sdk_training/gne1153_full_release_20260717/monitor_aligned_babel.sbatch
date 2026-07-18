@@ -24,5 +24,4 @@ sha256sum "$0" "$SCRIPT" "$PREPARE"
 python "$SCRIPT" \
   --job-id "$TRAIN_JOB_ID" \
   --run-root "$RUN_ROOT" \
-  --output "$SNAPSHOT" \
-  --auto-requeue
+  --output "$SNAPSHOT"

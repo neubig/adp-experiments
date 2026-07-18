@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persist aligned Babel acceptance evidence and trigger one guarded USR1 requeue."""
+"""Persist aligned Babel acceptance evidence without changing the training job."""
 
 from __future__ import annotations
 
@@ -125,6 +125,11 @@ def snapshot(job_id: str, run_root: Path) -> dict[str, Any]:
         ),
         "tokenized_complete": (
             tokenization is not None
+            and tokenization.get("splits") == {"train": 9_196_689, "validation": 500}
+            and tokenization.get("tokenizer_skipped_train_rows") == 0
+            and tokenization.get("evaluation_skipped_rows") == 0
+            and tokenization.get("total_tokenizer_filtered_rows") == 0
+            and tokenization.get("llamafactory_abnormal_warning_count") == 0
             and tokenization.get("warning_count_matches_total_filtered") is True
         ),
         "real_loss_seen": bool(loss_lines),
@@ -184,28 +189,6 @@ def snapshot(job_id: str, run_root: Path) -> dict[str, Any]:
     }
 
 
-def maybe_signal(value: dict[str, Any], marker: Path) -> None:
-    if marker.exists() or not value["pre_requeue_gate"] or value["slurm_restart_count"] != 0:
-        return
-    checkpoint = next(item for item in value["checkpoints"] if item["complete"])
-    record = {
-        "requested_at": now(),
-        "job_id": value["job_id"],
-        "signal": "USR1",
-        "target": "batch shell",
-        "checkpoint": checkpoint,
-        "pre_signal_snapshot": value,
-        "command": ["scancel", "--batch", "--signal=USR1", value["job_id"]],
-        "status": "requesting",
-    }
-    atomic_json(marker, record)
-    rc, stdout, stderr = command(*record["command"])
-    record.update({"returncode": rc, "stdout": stdout, "stderr": stderr, "status": "sent" if rc == 0 else "failed"})
-    atomic_json(marker, record)
-    if rc:
-        marker.rename(marker.with_suffix(marker.suffix + ".failed"))
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", required=True)
@@ -213,19 +196,15 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--interval", type=int, default=60)
     parser.add_argument("--iterations", type=int, default=715)
-    parser.add_argument("--auto-requeue", action="store_true")
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     history = args.output.with_suffix(".history.jsonl")
-    signal_marker = args.output.parent / f"requeue_controller_{args.job_id}.signal.json"
     for _ in range(args.iterations):
         value = snapshot(args.job_id, args.run_root)
         atomic_json(args.output, value)
         with history.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(value, sort_keys=True) + "\n")
         print(json.dumps({"observed_at": value["observed_at"], "flags": value["flags"]}), flush=True)
-        if args.auto_requeue:
-            maybe_signal(value, signal_marker)
         time.sleep(args.interval)
 
 
