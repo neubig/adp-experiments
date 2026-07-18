@@ -21,6 +21,9 @@ LOSS_RE = re.compile(r"(?:['\"]loss['\"]\s*:|\bloss\s*=)\s*['\"]?([0-9.eE+-]+)")
 PROGRESS_RE = re.compile(r"(?<!\d)(\d{1,9})/(\d{1,9})(?!\d)")
 WANDB_URL_RE = re.compile(r"https://wandb\.ai/[^\s]+")
 EXPECTED_WANDB_ID = "adpv2-full24k-aligned-v4-qwen35-4b-babel-1ep-eb95b66-20260717"
+EXPECTED_WANDB_RUN_URL = (
+    "https://wandb.ai/gneubig/adp-experiments/runs/" + EXPECTED_WANDB_ID
+)
 
 
 def now() -> str:
@@ -89,6 +92,7 @@ def snapshot(job_id: str, run_root: Path) -> dict[str, Any]:
     combined = tail_text(evidence_dir / f"{prefix}.out") + "\n" + tail_text(evidence_dir / f"{prefix}.err")
     loss_lines = [line[-2000:] for line in combined.splitlines() if LOSS_RE.search(line)]
     wandb_urls = sorted(set(WANDB_URL_RE.findall(combined)))
+    wandb_run_urls = sorted(url for url in wandb_urls if "/runs/" in url)
     progress = [(int(a), int(b)) for a, b in PROGRESS_RE.findall(combined)]
     gpu = gpu_summary(evidence_dir, job_id)
     checkpoints = checkpoint_checks(run_root / "output_aligned_v4_qwen35_4b_base_full_sft_one_epoch")
@@ -149,6 +153,7 @@ def snapshot(job_id: str, run_root: Path) -> dict[str, Any]:
         "progress_max_current": max((item[0] for item in progress), default=None),
         "progress_totals": sorted(set(item[1] for item in progress))[-10:],
         "wandb_urls": wandb_urls,
+        "wandb_run_urls": wandb_run_urls,
         "expected_wandb_run_id": EXPECTED_WANDB_ID,
         "wandb_dirs": wandb_dirs,
         "gpu": gpu,
@@ -182,7 +187,7 @@ def snapshot(job_id: str, run_root: Path) -> dict[str, Any]:
             and max((item[0] for item in post_restart_progress), default=-1) > selected_step
             and len(set(run_id_values)) == 1
             and set(run_id_values) == {EXPECTED_WANDB_ID}
-            and len(wandb_urls) == 1
+            and set(wandb_run_urls) == {EXPECTED_WANDB_RUN_URL}
             and flags["job_running"]
             and flags["gpu_active_seen"]
         ),
