@@ -126,6 +126,7 @@ def main() -> None:
     args = parser.parse_args()
     info = json.loads(args.dataset_info.read_text())
     items = [(name, entry["file_name"]) for name, entry in info.items()]
+    items.sort(key=lambda item: Path(item[1]).stat().st_size, reverse=True)
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as pool:
         results = list(pool.map(scan, items))
     print(json.dumps(results, indent=2))
