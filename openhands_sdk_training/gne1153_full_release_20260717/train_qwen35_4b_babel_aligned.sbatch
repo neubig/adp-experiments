@@ -14,6 +14,7 @@
 #SBATCH --error=/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/evidence/%x-%j.err
 
 set -euo pipefail
+export PATH=/home/gneubig/exp/adp-smoke/.venv/bin:$PATH
 
 SOURCE_ROOT=/home/gneubig/homework/delegated/babel-gne1153-agentserver-xC2x1IyV/repo
 RUNTIME_ROOT=/home/gneubig/work/adp/adp-experiments/openhands_sdk_training
@@ -24,7 +25,8 @@ ALIGNMENT_MANIFEST=${DATASET_ROOT}/alignment_manifest.json
 CONFIG_SOURCE=${SOURCE_ROOT}/openhands_sdk_training/gne1153_full_release_20260717/qwen35_4b_adpv2_full24k_aligned_babel_one_epoch.yaml
 RESTART_COUNT=${SLURM_RESTART_COUNT:-0}
 CONFIG=${RUN_ROOT}/evidence/qwen35_4b_adpv2_full24k_aligned_babel_one_epoch.runtime.${SLURM_JOB_ID}.restart_${RESTART_COUNT}.yaml
-PREPARE_CONFIG=${SOURCE_ROOT}/openhands_sdk_training/scripts/gne1153_prepare_restartable_config.py
+PREPARE_CONFIG=${SOURCE_ROOT}/openhands_sdk_training/gne1153_full_release_20260717/prepare_aligned_restartable_config.py
+CHECKPOINT_EVIDENCE=${RUN_ROOT}/evidence/checkpoint_selection.${SLURM_JOB_ID}.restart_${RESTART_COUNT}.json
 PROBE=${SOURCE_ROOT}/openhands_sdk_training/scripts/gne1153_torch_distributed_probe.py
 TOKENIZED=${RUN_ROOT}/tokenized_aligned_qwen35_4b_base_qwen3_5_nothink_seq32768
 TOKENIZED_MANIFEST=${DATASET_ROOT}/tokenized_aligned_manifest.json
@@ -75,17 +77,25 @@ mkdir -p "${RUN_ROOT}/evidence" "${RUN_ROOT}/wandb" "${RUN_ROOT}/wandb_cache"
 EXECUTED_SCRIPT=${RUN_ROOT}/evidence/train_qwen35_4b_babel_aligned.${SLURM_JOB_ID}.restart_${RESTART_COUNT}.sbatch
 CONFIG_SNAPSHOT=${RUN_ROOT}/evidence/qwen35_4b_adpv2_full24k_aligned_babel_one_epoch.source.${SLURM_JOB_ID}.restart_${RESTART_COUNT}.yaml
 DS_SNAPSHOT=${RUN_ROOT}/evidence/ds_z3_config.${SLURM_JOB_ID}.restart_${RESTART_COUNT}.json
+PREPARE_SNAPSHOT=${RUN_ROOT}/evidence/prepare_aligned_restartable_config.${SLURM_JOB_ID}.restart_${RESTART_COUNT}.py
+WATCHER_SNAPSHOT=${RUN_ROOT}/evidence/watch_tokenized_manifest.aligned.${SLURM_JOB_ID}.restart_${RESTART_COUNT}.py
 cp -a "$0" "$EXECUTED_SCRIPT"
 cp -a "$CONFIG_SOURCE" "$CONFIG_SNAPSHOT"
 cp -a "${SOURCE_ROOT}/openhands_sdk_training/gne1153_full_release_20260717/ds_z3_config.json" "$DS_SNAPSHOT"
-sha256sum "$EXECUTED_SCRIPT" "$CONFIG_SNAPSHOT" "$DS_SNAPSHOT"
+cp -a "$PREPARE_CONFIG" "$PREPARE_SNAPSHOT"
+cp -a "$WATCHER" "$WATCHER_SNAPSHOT"
+sha256sum "$EXECUTED_SCRIPT" "$CONFIG_SNAPSHOT" "$DS_SNAPSHOT" "$PREPARE_SNAPSHOT" "$WATCHER_SNAPSHOT"
 
 if [[ -d "$TOKENIZED" && ! -f "$TOKENIZED/dataset_dict.json" ]]; then
   mv "$TOKENIZED" "${RUN_ROOT}/evidence/$(basename "$TOKENIZED").incomplete.$(date +%Y%m%dT%H%M%S)"
 fi
 
-export PATH=/home/gneubig/exp/adp-smoke/.venv/bin:$PATH
-python "$PREPARE_CONFIG" --source "$CONFIG_SOURCE" --destination "$CONFIG"
+python "$PREPARE_CONFIG" \
+  --source "$CONFIG_SOURCE" \
+  --destination "$CONFIG" \
+  --evidence "$CHECKPOINT_EVIDENCE" \
+  --world-size 4 \
+  --minimum-age-seconds 120
 cd "$RUNTIME_ROOT"
 
 export HF_HOME=/home/gneubig/exp/adp-smoke/hf_cache
