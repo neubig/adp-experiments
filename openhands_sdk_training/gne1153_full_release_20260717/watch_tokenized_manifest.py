@@ -70,7 +70,17 @@ def main() -> None:
     manifest = json.loads(args.manifest.read_text())
     adapted_rows = int(manifest["adapted_train_rows"])
     train_rows = int(lengths["train"])
-    evaluation_rows = int(manifest["evaluation"]["rows"])
+    evaluation = manifest["evaluation"]
+    evaluation_rows_value = evaluation.get("rows", evaluation.get("observed_rows"))
+    if evaluation_rows_value is None:
+        raise KeyError("evaluation manifest has neither rows nor observed_rows")
+    evaluation_rows = int(evaluation_rows_value)
+    requested_evaluation_rows = evaluation.get("requested_rows")
+    if requested_evaluation_rows is not None and int(requested_evaluation_rows) != evaluation_rows:
+        raise RuntimeError(
+            "evaluation requested/observed row mismatch: "
+            f"requested={requested_evaluation_rows} observed={evaluation_rows}"
+        )
     evaluation_output_rows = int(lengths.get("validation", lengths.get("eval", 0)))
     train_filtered = adapted_rows - train_rows
     evaluation_filtered = evaluation_rows - evaluation_output_rows
