@@ -23,6 +23,22 @@ VALIDATION=${EVIDENCE}/alignment_v3_validation-9357001.json
 PREFLIGHT=${EVIDENCE}/aligned_v3_loader_preflight.json
 RESULT=${EVIDENCE}/aligned_v3_persisted_continuation.json
 
+verify_sha256() {
+  local path=$1
+  local expected=$2
+  local observed
+  observed=$(sha256sum "$path")
+  observed=${observed%% *}
+  [[ "$observed" == "$expected" ]] || {
+    echo "content_hash_mismatch path=${path} expected=${expected} observed=${observed}" >&2
+    return 1
+  }
+}
+
+verify_sha256 "$RECORDER" fdeebf47d5e8bf98127b0d284777c1715f909fab4ab62b43837b423d3ff58b75
+verify_sha256 "$TRAIN" 85cbb75cb8c5e5a75b6532f9ae89c2489f9b70c88434ec59d74701524e456838
+verify_sha256 "$MONITOR" 8501319ad9b210c365e0d4a9d3ab83f4b6eecf782512b363f309cead09b7d0ce
+
 cp -a "$0" "${EVIDENCE}/continue_babel_after_v3.${SLURM_JOB_ID}.sbatch"
 cp -a "$RECORDER" "${EVIDENCE}/record_aligned_release_evidence.${SLURM_JOB_ID}.py"
 cp -a "$TRAIN" "${EVIDENCE}/train_qwen35_4b_babel_aligned.source.${SLURM_JOB_ID}.sbatch"
