@@ -62,7 +62,13 @@ def validate_file(item: tuple[str, str, int]) -> dict[str, Any]:
             if role == "function_call":
                 content = message.get("content")
                 assert isinstance(content, str), (path, line_number, index)
-                wrapped = validate_function_content(content)
+                try:
+                    wrapped = validate_function_content(content)
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"invalid function content in {path}:{line_number} "
+                        f"message {index}: {content[:500]!r}"
+                    ) from exc
                 function_messages += 1
                 wrapped_function_messages += int(wrapped)
         rows += 1
