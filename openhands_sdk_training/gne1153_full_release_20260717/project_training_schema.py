@@ -106,7 +106,8 @@ def project_file(source_text: str, destination_text: str, expected_sha256: str) 
                 if len(metadata_matches) > 1:
                     raise RuntimeError(f"{source}:{line_number}: ambiguous metadata marker")
                 if metadata_matches:
-                    metadata_pos, marker = metadata_matches[0]
+                    _, marker = metadata_matches[0]
+                    metadata_pos = body.rfind(marker)
                     if metadata_pos <= tools_pos:
                         raise RuntimeError(f"{source}:{line_number}: metadata is not the final field")
                     value = body[metadata_pos + len(marker) : -1].lstrip()
