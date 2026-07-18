@@ -51,7 +51,7 @@ assert m["source_rows"] == 9_640_563
 assert m["adapted_train_rows"] == 9_196_689
 assert m["observed_config_count"] == 52
 assert a["status"] == "alignment_complete"
-assert a["schema_version"] == 3
+assert a["schema_version"] == 4
 assert a["source_adapted_rows"] == m["adapted_train_rows"]
 assert a["source_config_count"] == 52
 assert a["nonempty_config_count"] == 51
