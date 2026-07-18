@@ -72,7 +72,7 @@ def validate_file(item: tuple[str, str, int]) -> dict[str, Any]:
                 assert isinstance(content, str), (path, line_number, index)
                 try:
                     wrapped = validate_function_content(content)
-                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                except (AssertionError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
                     raise ValueError(
                         f"invalid function content in {path}:{line_number} "
                         f"message {index}: {content[:500]!r}"
