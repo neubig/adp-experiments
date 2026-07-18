@@ -32,6 +32,7 @@ TOKENIZED=${RUN_ROOT}/tokenized_aligned_v4_qwen35_4b_base_qwen3_5_nothink_seq327
 TOKENIZED_MANIFEST=${DATASET_ROOT}/tokenized_aligned_v4_manifest.json
 WATCHER=${SOURCE_ROOT}/openhands_sdk_training/gne1153_full_release_20260717/watch_tokenized_manifest.py
 GPU_LOG=${RUN_ROOT}/evidence/gpu_${SLURM_JOB_ID}_restart_${RESTART_COUNT}.csv
+TRAIN_LOG=${RUN_ROOT}/evidence/${SLURM_JOB_NAME}-${SLURM_JOB_ID}.err
 
 python - "$MANIFEST" "$ALIGNMENT_MANIFEST" "$CONFIG_SOURCE" <<'PY'
 import json, sys
@@ -51,16 +52,24 @@ assert projection["config_count"] == 52
 assert projection["train_rows"] == m["adapted_train_rows"]
 assert projection["evaluation"]["rows"] == 500
 assert a["status"] == "alignment_complete"
-assert a["schema_version"] == 3
+assert a["schema_version"] == 4
 assert a["source_adapted_rows"] == m["adapted_train_rows"]
 assert a["source_config_count"] == 52
 assert a["nonempty_config_count"] == 51
 assert a["empty_dataset_names"] == ["adpv2_full24k_37"]
+assert a["incremental_reuse"]["base_file_hashes_reverified"] is True
+assert a["incremental_reuse"]["new_targets"] == [
+    "14_coderforge_preview.llamafactory.jsonl",
+    "20_gair_davinci_dev.llamafactory.jsonl",
+    "32_nebius_SWE-rebench-openhands-trajectories.llamafactory.jsonl",
+    "36_nvidia_SWE-Zero-openhands-trajectories.llamafactory.jsonl",
+    "49_toolmind.llamafactory.jsonl",
+]
 assert a["normalized_rows"] > 0
 assert a["merged_messages"] >= a["normalized_rows"]
 alignment_note = m["training_alignment"]
 assert alignment_note["status"] == "validated"
-assert alignment_note["alignment_schema_version"] == 3
+assert alignment_note["alignment_schema_version"] == 4
 assert alignment_note["training_rows"] == m["adapted_train_rows"]
 assert alignment_note["evaluation_rows"] == 500
 zero_trainable = [d for d in m["datasets"] if d["adapted_rows"] == 0]
@@ -157,7 +166,8 @@ MONITOR_PID=$!
 python "$WATCHER" \
   --manifest "$MANIFEST" \
   --tokenized-path "$TOKENIZED" \
-  --output "$TOKENIZED_MANIFEST" &
+  --output "$TOKENIZED_MANIFEST" \
+  --training-log "$TRAIN_LOG" &
 WATCHER_PID=$!
 
 on_requeue() {

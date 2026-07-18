@@ -20,7 +20,7 @@ from prepare_aligned_restartable_config import checkpoint_evidence, checkpoint_s
 LOSS_RE = re.compile(r"(?:['\"]loss['\"]\s*:|\bloss\s*=)\s*([0-9.eE+-]+)")
 PROGRESS_RE = re.compile(r"(?<!\d)(\d{1,9})/(\d{1,9})(?!\d)")
 WANDB_URL_RE = re.compile(r"https://wandb\.ai/[^\s]+")
-EXPECTED_WANDB_ID = "adpv2-full24k-aligned-v3-qwen35-4b-babel-1ep-eb95b66-20260717"
+EXPECTED_WANDB_ID = "adpv2-full24k-aligned-v4-qwen35-4b-babel-1ep-eb95b66-20260717"
 
 
 def now() -> str:
@@ -85,14 +85,14 @@ def restart_count(job_id: str) -> int | None:
 
 def snapshot(job_id: str, run_root: Path) -> dict[str, Any]:
     evidence_dir = run_root / "evidence"
-    prefix = f"adpv2full24k-alignedv3-q35-4b-babel-1ep-{job_id}"
+    prefix = f"adpv2full24k-alignedv4-q35-4b-babel-1ep-{job_id}"
     combined = tail_text(evidence_dir / f"{prefix}.out") + "\n" + tail_text(evidence_dir / f"{prefix}.err")
     loss_lines = [line[-2000:] for line in combined.splitlines() if LOSS_RE.search(line)]
     wandb_urls = sorted(set(WANDB_URL_RE.findall(combined)))
     progress = [(int(a), int(b)) for a, b in PROGRESS_RE.findall(combined)]
     gpu = gpu_summary(evidence_dir, job_id)
-    checkpoints = checkpoint_checks(run_root / "output_aligned_v3_qwen35_4b_base_full_sft_one_epoch")
-    token_path = run_root / "dataset/tokenized_aligned_v3_manifest.json"
+    checkpoints = checkpoint_checks(run_root / "output_aligned_v4_qwen35_4b_base_full_sft_one_epoch")
+    token_path = run_root / "dataset/tokenized_aligned_v4_manifest.json"
     tokenization = json.loads(token_path.read_text()) if token_path.is_file() else None
     release = json.loads((run_root / "dataset/manifest.json").read_text())
     rc, squeue, _ = command("squeue", "-h", "-j", job_id, "-o", "%T|%M|%N|%R")
@@ -121,8 +121,12 @@ def snapshot(job_id: str, run_root: Path) -> dict[str, Any]:
             and release.get("source_rows") == 9_640_563
             and release.get("adapted_train_rows") == 9_196_689
             and release.get("training_alignment", {}).get("status") == "validated"
+            and release.get("training_alignment", {}).get("alignment_schema_version") == 4
         ),
-        "tokenized_complete": tokenization is not None,
+        "tokenized_complete": (
+            tokenization is not None
+            and tokenization.get("warning_count_matches_total_filtered") is True
+        ),
         "real_loss_seen": bool(loss_lines),
         "gpu_active_seen": gpu["max_utilization_percent"] > 0 and gpu["max_memory_used_mib"] > 1000,
         "wandb_url_seen": bool(wandb_urls),
