@@ -28,6 +28,25 @@ def atomic_json(path: Path, value: object) -> None:
     temporary.replace(path)
 
 
+def tokenized_dataset_complete(path: Path) -> bool:
+    if not (path / "dataset_dict.json").is_file():
+        return False
+    for split in ("train", "validation"):
+        split_path = path / split
+        state_path = split_path / "state.json"
+        if not state_path.is_file() or not (split_path / "dataset_info.json").is_file():
+            return False
+        try:
+            state = json.loads(state_path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            return False
+        for data_file in state.get("_data_files", []):
+            shard = split_path / data_file["filename"]
+            if not shard.is_file() or shard.stat().st_size == 0:
+                return False
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, required=True)
@@ -41,8 +60,7 @@ def main() -> None:
     args = parser.parse_args()
 
     deadline = time.monotonic() + args.wait_seconds
-    marker = args.tokenized_path / "dataset_dict.json"
-    while not marker.is_file():
+    while not tokenized_dataset_complete(args.tokenized_path):
         if time.monotonic() >= deadline:
             raise TimeoutError(f"tokenized dataset was not completed: {args.tokenized_path}")
         time.sleep(30)
