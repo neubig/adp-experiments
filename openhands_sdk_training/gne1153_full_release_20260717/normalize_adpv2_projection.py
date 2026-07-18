@@ -51,10 +51,14 @@ def combine_response_group(group: list[dict[str, str]]) -> dict[str, str]:
     if functions:
         function_json = json.dumps(functions, ensure_ascii=False)
         thought = "\n\n".join(thoughts)
-        prefix = f"{thought}\n" if thought else ""
+        # LLaMA-Factory selects the first <tool_call>...</tool_call> span and
+        # treats everything outside it as the assistant thought. Put our
+        # machine-readable span first so literal tool-call examples inside the
+        # thought cannot shadow it; the formatter still renders thought first.
+        suffix = f"\n{thought}" if thought else ""
         return {
             "role": "function_call",
-            "content": f"{prefix}<tool_call>{function_json}</tool_call>",
+            "content": f"<tool_call>{function_json}</tool_call>{suffix}",
         }
     return {"role": "assistant", "content": "\n\n".join(thoughts)}
 
@@ -140,10 +144,13 @@ def main() -> None:
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--targets", nargs="+", required=True)
     parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--aligned-dir-name", default="training_projection_aligned_v2")
+    parser.add_argument("--view-dir-name", default="dataset_aligned_v2")
+    parser.add_argument("--manifest-name", default="alignment_manifest_v2.json")
     args = parser.parse_args()
     root = args.dataset_root.resolve()
     projection = root / "training_projection"
-    aligned = root / "training_projection_aligned"
+    aligned = root / args.aligned_dir_name
     aligned.mkdir(exist_ok=False)
     manifest_path = root / "manifest.json"
     manifest_bytes = manifest_path.read_bytes()
@@ -179,11 +186,11 @@ def main() -> None:
     dataset_info["adpv2_full24k_eval_500"]["file_name"] = str(
         aligned / "eval_500.llamafactory.jsonl"
     )
-    view = root.parent / "dataset_aligned"
+    view = root.parent / args.view_dir_name
     view.mkdir(exist_ok=False)
     atomic_json(view / "dataset_info.json", dataset_info)
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "alignment_complete",
         "created_at": now(),
         "source_manifest": str(manifest_path),
@@ -199,8 +206,12 @@ def main() -> None:
         "files": results,
         "normalized_rows": sum(item["changed_rows"] for item in results),
         "merged_messages": sum(item["merged_messages"] for item in results),
+        "response_merge_encoding": (
+            "machine-readable <tool_call> JSON span first; assistant thought outside the span; "
+            "LLaMA-Factory renders the thought before the formatted call"
+        ),
     }
-    atomic_json(root / "alignment_manifest.json", result)
+    atomic_json(root / args.manifest_name, result)
     print(json.dumps(result, indent=2))
 
 

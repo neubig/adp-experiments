@@ -31,12 +31,16 @@ def main() -> None:
     parser.add_argument("--alignment-manifest", type=Path, required=True)
     parser.add_argument("--validation", type=Path, required=True)
     parser.add_argument("--loader-preflight", type=Path, required=True)
+    parser.add_argument("--builder-job-id", type=int, required=True)
+    parser.add_argument("--validation-job-id", type=int, required=True)
+    parser.add_argument("--loader-preflight-job-id", type=int, required=True)
     args = parser.parse_args()
 
     alignment = json.loads(args.alignment_manifest.read_text())
     validation = json.loads(args.validation.read_text())
     preflight = json.loads(args.loader_preflight.read_text())
     assert alignment["status"] == "alignment_complete"
+    assert alignment["schema_version"] == 2
     assert alignment["source_config_count"] == 52
     assert alignment["source_adapted_rows"] == 9_196_689
     assert alignment["nonempty_config_count"] == 51
@@ -66,9 +70,10 @@ def main() -> None:
 
     manifest["training_alignment"] = {
         "status": "validated",
-        "builder_job_id": 9356616,
-        "validation_job_id": 9356688,
-        "loader_preflight_job_id": 9356765,
+        "alignment_schema_version": 2,
+        "builder_job_id": args.builder_job_id,
+        "validation_job_id": args.validation_job_id,
+        "loader_preflight_job_id": args.loader_preflight_job_id,
         "alignment_manifest_path": str(args.alignment_manifest.resolve()),
         "alignment_manifest_sha256": sha256(args.alignment_manifest),
         "validation_path": str(args.validation.resolve()),

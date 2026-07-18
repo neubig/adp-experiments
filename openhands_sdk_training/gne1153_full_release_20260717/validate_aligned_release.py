@@ -87,13 +87,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--alignment-manifest-name", default="alignment_manifest_v2.json")
     args = parser.parse_args()
 
     root = args.dataset_root.resolve()
     manifest_bytes = (root / "manifest.json").read_bytes()
     manifest = json.loads(manifest_bytes)
-    alignment = json.loads((root / "alignment_manifest.json").read_text())
-    view = root.parent / "dataset_aligned"
+    alignment = json.loads((root / args.alignment_manifest_name).read_text())
+    view = Path(alignment["dataset_view"])
     dataset_info = json.loads((view / "dataset_info.json").read_text())
 
     assert manifest["release"]["revision"] == "eb95b66ca30ef071d5e49495d5d780c29f9aef7b"
@@ -131,7 +132,7 @@ def main() -> None:
     output = {
         "validation": "passed",
         "manifest_sha256": sha256_file(root / "manifest.json"),
-        "alignment_manifest_sha256": sha256_file(root / "alignment_manifest.json"),
+        "alignment_manifest_sha256": sha256_file(root / args.alignment_manifest_name),
         "dataset_info_sha256": sha256_file(view / "dataset_info.json"),
         "config_count": 52,
         "nonempty_config_count": 51,

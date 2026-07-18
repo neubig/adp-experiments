@@ -13,17 +13,17 @@ deepspeed: /home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95
 ### dataset
 dataset: adpv2_full24k_00,adpv2_full24k_01,adpv2_full24k_02,adpv2_full24k_03,adpv2_full24k_04,adpv2_full24k_05,adpv2_full24k_06,adpv2_full24k_07,adpv2_full24k_08,adpv2_full24k_09,adpv2_full24k_10,adpv2_full24k_11,adpv2_full24k_12,adpv2_full24k_13,adpv2_full24k_14,adpv2_full24k_15,adpv2_full24k_16,adpv2_full24k_17,adpv2_full24k_18,adpv2_full24k_19,adpv2_full24k_20,adpv2_full24k_21,adpv2_full24k_22,adpv2_full24k_23,adpv2_full24k_24,adpv2_full24k_25,adpv2_full24k_26,adpv2_full24k_27,adpv2_full24k_28,adpv2_full24k_29,adpv2_full24k_30,adpv2_full24k_31,adpv2_full24k_32,adpv2_full24k_33,adpv2_full24k_34,adpv2_full24k_35,adpv2_full24k_36,adpv2_full24k_38,adpv2_full24k_39,adpv2_full24k_40,adpv2_full24k_41,adpv2_full24k_42,adpv2_full24k_43,adpv2_full24k_44,adpv2_full24k_45,adpv2_full24k_46,adpv2_full24k_47,adpv2_full24k_48,adpv2_full24k_49,adpv2_full24k_50,adpv2_full24k_51
 eval_dataset: adpv2_full24k_eval_500
-dataset_dir: /home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset_aligned
+dataset_dir: /home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset_aligned_v2
 template: qwen3_5_nothink
 cutoff_len: 32768
 overwrite_cache: false
 preprocessing_num_workers: 16
 dataloader_num_workers: 0
 data_shared_file_system: true
-tokenized_path: /home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/tokenized_aligned_qwen35_4b_base_qwen3_5_nothink_seq32768
+tokenized_path: /home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/tokenized_aligned_v2_qwen35_4b_base_qwen3_5_nothink_seq32768
 
 ### output
-output_dir: /home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/output_aligned_qwen35_4b_base_full_sft_one_epoch
+output_dir: /home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/output_aligned_v2_qwen35_4b_base_full_sft_one_epoch
 logging_steps: 1
 save_steps: 500
 save_total_limit: 3
@@ -31,7 +31,7 @@ plot_loss: true
 overwrite_output_dir: false
 save_only_model: false
 report_to: wandb
-run_name: adpv2-full-24k-aligned-qwen35-4b-base-babel-one-epoch-eb95b66-20260717
+run_name: adpv2-full-24k-aligned-v2-qwen35-4b-base-babel-one-epoch-eb95b66-20260717
 
 ### train
 per_device_train_batch_size: 1

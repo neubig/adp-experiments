@@ -40,11 +40,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--alignment-manifest-name", default="alignment_manifest_v2.json")
     args = parser.parse_args()
     root = args.dataset_root.resolve()
     manifest = json.loads((root / "manifest.json").read_text())
-    alignment = json.loads((root / "alignment_manifest.json").read_text())
-    dataset_info = json.loads((root.parent / "dataset_aligned/dataset_info.json").read_text())
+    alignment = json.loads((root / args.alignment_manifest_name).read_text())
+    dataset_info = json.loads((Path(alignment["dataset_view"]) / "dataset_info.json").read_text())
     assert manifest["observed_config_count"] == 52
     assert manifest["adapted_train_rows"] == 9_196_689
     assert alignment["status"] == "alignment_complete"
@@ -92,7 +93,9 @@ def main() -> None:
         assert converted["_response"], row["id"]
         for message in converted["_response"]:
             if message["role"] == "function":
-                function_formatter.apply(content=message["content"])
+                function_formatter.apply(
+                    content=message["content"], tool_call_words=("<tool_call>", "</tool_call>")
+                )
                 function_messages += 1
 
     evidence = {
