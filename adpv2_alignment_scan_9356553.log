@@ -1,0 +1,404 @@
+[
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/38_openhands.llamafactory.jsonl",
+    "rows": 848,
+    "invalid_rows": 62,
+    "adjacent_same_side": [
+      [
+        [
+          "assistant",
+          "function_call"
+        ],
+        76
+      ],
+      [
+        [
+          "assistant",
+          "assistant"
+        ],
+        26
+      ]
+    ],
+    "reasons": [
+      [
+        "odd_message_count",
+        50
+      ],
+      [
+        "index_4_function_call",
+        12
+      ],
+      [
+        "index_2_function_call",
+        11
+      ],
+      [
+        "index_18_function_call",
+        4
+      ],
+      [
+        "index_26_function_call",
+        4
+      ],
+      [
+        "index_6_function_call",
+        4
+      ],
+      [
+        "index_8_function_call",
+        4
+      ],
+      [
+        "index_20_function_call",
+        3
+      ],
+      [
+        "index_36_function_call",
+        2
+      ],
+      [
+        "index_28_function_call",
+        2
+      ],
+      [
+        "index_6_assistant",
+        2
+      ],
+      [
+        "index_22_function_call",
+        2
+      ],
+      [
+        "index_56_assistant",
+        1
+      ],
+      [
+        "index_190_function_call",
+        1
+      ],
+      [
+        "index_12_function_call",
+        1
+      ],
+      [
+        "index_64_function_call",
+        1
+      ],
+      [
+        "index_30_function_call",
+        1
+      ],
+      [
+        "index_2_assistant",
+        1
+      ],
+      [
+        "index_8_assistant",
+        1
+      ],
+      [
+        "index_42_function_call",
+        1
+      ],
+      [
+        "index_32_function_call",
+        1
+      ],
+      [
+        "index_14_function_call",
+        1
+      ],
+      [
+        "index_10_function_call",
+        1
+      ],
+      [
+        "index_40_function_call",
+        1
+      ]
+    ]
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/39_openresearcher.llamafactory.jsonl",
+    "rows": 655474,
+    "invalid_rows": 376486,
+    "adjacent_same_side": [
+      [
+        [
+          "assistant",
+          "function_call"
+        ],
+        7351498
+      ],
+      [
+        [
+          "assistant",
+          "assistant"
+        ],
+        998652
+      ]
+    ],
+    "reasons": [
+      [
+        "index_2_function_call",
+        345038
+      ],
+      [
+        "odd_message_count",
+        188952
+      ],
+      [
+        "index_4_function_call",
+        22123
+      ],
+      [
+        "index_2_assistant",
+        8454
+      ],
+      [
+        "index_4_assistant",
+        801
+      ],
+      [
+        "index_6_assistant",
+        41
+      ],
+      [
+        "index_6_function_call",
+        29
+      ]
+    ]
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/40_openthoughts_agent_sft.llamafactory.jsonl",
+    "rows": 126311,
+    "invalid_rows": 0,
+    "adjacent_same_side": [],
+    "reasons": []
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/41_openthoughts_tb_dev.llamafactory.jsonl",
+    "rows": 36,
+    "invalid_rows": 0,
+    "adjacent_same_side": [],
+    "reasons": []
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/42_orca_agentinstruct.llamafactory.jsonl",
+    "rows": 887598,
+    "invalid_rows": 0,
+    "adjacent_same_side": [],
+    "reasons": []
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/43_scale_swe_distilled.llamafactory.jsonl",
+    "rows": 394398,
+    "invalid_rows": 0,
+    "adjacent_same_side": [],
+    "reasons": []
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/44_screenagent.llamafactory.jsonl",
+    "rows": 2000,
+    "invalid_rows": 0,
+    "adjacent_same_side": [],
+    "reasons": []
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/45_swe-gym_openhands_sampled_trajectories.llamafactory.jsonl",
+    "rows": 12178,
+    "invalid_rows": 0,
+    "adjacent_same_side": [],
+    "reasons": []
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/46_swe-play-trajectories.llamafactory.jsonl",
+    "rows": 2818,
+    "invalid_rows": 0,
+    "adjacent_same_side": [],
+    "reasons": []
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/47_swe-smith.llamafactory.jsonl",
+    "rows": 74610,
+    "invalid_rows": 0,
+    "adjacent_same_side": [],
+    "reasons": []
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/48_synatra.llamafactory.jsonl",
+    "rows": 99924,
+    "invalid_rows": 0,
+    "adjacent_same_side": [],
+    "reasons": []
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/49_toolmind.llamafactory.jsonl",
+    "rows": 135137,
+    "invalid_rows": 0,
+    "adjacent_same_side": [],
+    "reasons": []
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/50_toucan_1_5m.llamafactory.jsonl",
+    "rows": 1712003,
+    "invalid_rows": 572349,
+    "adjacent_same_side": [
+      [
+        [
+          "assistant",
+          "function_call"
+        ],
+        1186319
+      ],
+      [
+        [
+          "assistant",
+          "assistant"
+        ],
+        123084
+      ]
+    ],
+    "reasons": [
+      [
+        "index_2_function_call",
+        460891
+      ],
+      [
+        "odd_message_count",
+        385205
+      ],
+      [
+        "index_2_assistant",
+        72134
+      ],
+      [
+        "index_4_function_call",
+        22902
+      ],
+      [
+        "index_6_function_call",
+        4729
+      ],
+      [
+        "index_8_function_call",
+        4544
+      ],
+      [
+        "index_10_function_call",
+        2452
+      ],
+      [
+        "index_12_function_call",
+        1856
+      ],
+      [
+        "index_14_function_call",
+        986
+      ],
+      [
+        "index_16_function_call",
+        700
+      ],
+      [
+        "index_18_function_call",
+        318
+      ],
+      [
+        "index_20_function_call",
+        230
+      ],
+      [
+        "index_22_function_call",
+        128
+      ],
+      [
+        "index_24_function_call",
+        99
+      ],
+      [
+        "index_4_assistant",
+        70
+      ],
+      [
+        "index_26_function_call",
+        65
+      ],
+      [
+        "index_28_function_call",
+        64
+      ],
+      [
+        "index_30_function_call",
+        36
+      ],
+      [
+        "index_32_function_call",
+        30
+      ],
+      [
+        "index_34_function_call",
+        25
+      ],
+      [
+        "index_38_function_call",
+        22
+      ],
+      [
+        "index_36_function_call",
+        21
+      ],
+      [
+        "index_40_function_call",
+        18
+      ],
+      [
+        "index_6_assistant",
+        9
+      ],
+      [
+        "index_44_function_call",
+        5
+      ],
+      [
+        "index_8_assistant",
+        4
+      ],
+      [
+        "index_10_assistant",
+        3
+      ],
+      [
+        "index_46_function_call",
+        3
+      ],
+      [
+        "index_12_assistant",
+        1
+      ],
+      [
+        "index_42_function_call",
+        1
+      ],
+      [
+        "index_54_function_call",
+        1
+      ],
+      [
+        "index_50_function_call",
+        1
+      ],
+      [
+        "index_58_function_call",
+        1
+      ]
+    ]
+  },
+  {
+    "path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/dataset/training_projection/51_webarena_successful.llamafactory.jsonl",
+    "rows": 631,
+    "invalid_rows": 0,
+    "adjacent_same_side": [],
+    "reasons": []
+  }
+]

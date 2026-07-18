@@ -112,8 +112,12 @@ the non-overwriting run roots named by the launch scripts.
 - Validation job `9356577` completed `0:0` on 2026-07-18 and recomputed the
   canonical adapter outcome for all 47,271 `cognitivekernel_pro_sft` source
   rows using the manifest-pinned source and adapter hashes.
-- Source role distribution is exact: 47,184 rows are `system,user` and end on
-  `user`; 87 rows are `system,user,assistant` and end on `assistant`.
+- Source schema distribution is exact: all 47,271 rows contain `system,user`;
+  exactly 87 additionally contain `assistant`. No row contains a function
+  response, tool call, or trainable flag. The only top-level keys are
+  `id,messages,metadata,tools`, and every message has only `content,role`.
+- Consequently, 47,184 rows are `system,user` and end on `user`; 87 rows are
+  `system,user,assistant` and end on `assistant`.
 - The independent response test classified the same 47,184 rows as lacking any
   assistant/function-call response indicator and the same 87 rows as containing
   one. There were zero response-bearing skipped rows and zero response-free
