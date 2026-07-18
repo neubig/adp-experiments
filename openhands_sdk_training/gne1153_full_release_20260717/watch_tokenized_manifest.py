@@ -34,6 +34,9 @@ def main() -> None:
     parser.add_argument("--tokenized-path", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--training-log", type=Path, required=True)
+    parser.add_argument("--model-or-tokenizer", default="Qwen/Qwen3.5-4B-Base")
+    parser.add_argument("--manifest-key", default="tokenization")
+    parser.add_argument("--require-zero-filtering", action="store_true")
     parser.add_argument("--wait-seconds", type=int, default=172800)
     args = parser.parse_args()
 
@@ -73,7 +76,7 @@ def main() -> None:
         )
     result = {
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "model_or_tokenizer": "Qwen/Qwen3.5-4B-Base",
+        "model_or_tokenizer": args.model_or_tokenizer,
         "template": "qwen3_5_nothink",
         "cutoff_len": 32768,
         "tokenized_path": str(args.tokenized_path.resolve()),
@@ -98,10 +101,19 @@ def main() -> None:
         "files": files,
     }
     atomic_json(args.output, result)
-    manifest["tokenization"] = result
-    manifest["status"] = "tokenized_complete"
+    manifest[args.manifest_key] = result
+    if args.manifest_key == "tokenization":
+        manifest["status"] = "tokenized_complete"
     atomic_json(args.manifest, manifest)
     print(json.dumps(result, indent=2), flush=True)
+    if args.require_zero_filtering and (
+        train_filtered != 0 or evaluation_filtered != 0 or warning_count != 0
+    ):
+        raise RuntimeError(
+            "tokenization filtered rows or emitted abnormal-example warnings: "
+            f"train_filtered={train_filtered} evaluation_filtered={evaluation_filtered} "
+            f"warning_count={warning_count}"
+        )
 
 
 if __name__ == "__main__":

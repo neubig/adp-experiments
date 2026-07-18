@@ -22,7 +22,7 @@ overwrite_cache: false
 preprocessing_num_workers: 16
 dataloader_num_workers: 0
 data_shared_file_system: true
-tokenized_path: /home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/tokenized_aligned_v4_qwen35_4b_base_qwen3_5_nothink_seq32768
+tokenized_path: /project/flame/gneubig/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/tokenized_aligned_v4_qwen35_35b_a3b_qwen3_5_nothink_seq32768
 
 ### output
 output_dir: /project/flame/gneubig/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/output_aligned_v4_qwen35_35b_a3b_hpz8_fa3_one_epoch
