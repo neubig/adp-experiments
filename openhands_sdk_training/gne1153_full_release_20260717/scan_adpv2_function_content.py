@@ -19,8 +19,8 @@ from pathlib import Path
 TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 
 
-def scan(item: tuple[str, str, bool]) -> dict:
-    dataset_name, path_text, omit_samples = item
+def scan(item: tuple[str, str]) -> dict:
+    dataset_name, path_text = item
     path = Path(path_text)
     rows = 0
     function_messages = 0
@@ -37,7 +37,7 @@ def scan(item: tuple[str, str, bool]) -> dict:
         error: str | None = None,
     ) -> None:
         issue_counts[kind] = issue_counts.get(kind, 0) + 1
-        if not omit_samples and len(samples) < 50:
+        if len(samples) < 50:
             sample = {
                 "kind": kind,
                 "line": line_number,
@@ -68,17 +68,15 @@ def scan(item: tuple[str, str, bool]) -> dict:
                     try:
                         parsed = json.loads(content)
                     except json.JSONDecodeError:
-                        open_markers = content.count("<tool_call>")
-                        close_markers = content.count("</tool_call>")
-                        if open_markers != 1 or close_markers != 1:
+                        match = TOOL_CALL_RE.search(content)
+                        if match is not None and match.start() != 0:
                             issue(
-                                "wrapped_ambiguous_markers",
+                                "wrapped_machine_span_not_first",
                                 line_number=line_number,
                                 record=record,
                                 message_index=message_index,
                                 content=content,
                             )
-                        match = TOOL_CALL_RE.search(content)
                         if match is None:
                             raise ValueError("neither bare JSON nor a tool-call wrapper")
                         parsed = json.loads(match.group(1))
@@ -123,17 +121,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-info", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument(
-        "--omit-samples",
-        action="store_true",
-        help="record counts and locations without source-content prefixes",
-    )
     args = parser.parse_args()
     info = json.loads(args.dataset_info.read_text())
-    items = [
-        (name, entry["file_name"], args.omit_samples)
-        for name, entry in info.items()
-    ]
+    items = [(name, entry["file_name"]) for name, entry in info.items()]
     items.sort(key=lambda item: Path(item[1]).stat().st_size, reverse=True)
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as pool:
         results = list(pool.map(scan, items))

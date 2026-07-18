@@ -32,10 +32,12 @@ def validate_function_content(content: str) -> bool:
         assert "<tool_call>" not in content and "</tool_call>" not in content
         wrapped = False
     except json.JSONDecodeError:
-        assert content.count("<tool_call>") == 1
-        assert content.count("</tool_call>") == 1
         match = TOOL_CALL_RE.search(content)
         assert match is not None
+        # FunctionFormatter uses re.search and parses its first match.  In the
+        # normalized representation the machine span is therefore required to
+        # be first; literal marker examples later in the thought are harmless.
+        assert match.start() == 0
         calls = json.loads(match.group(1))
         wrapped = True
     if not isinstance(calls, list):
