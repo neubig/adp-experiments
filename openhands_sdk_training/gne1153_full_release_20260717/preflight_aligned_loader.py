@@ -40,7 +40,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--alignment-manifest-name", default="alignment_manifest_v2.json")
+    parser.add_argument("--alignment-manifest-name", default="alignment_manifest_v3.json")
     args = parser.parse_args()
     root = args.dataset_root.resolve()
     manifest = json.loads((root / "manifest.json").read_text())

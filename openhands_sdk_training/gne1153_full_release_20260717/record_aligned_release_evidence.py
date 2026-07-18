@@ -40,7 +40,7 @@ def main() -> None:
     validation = json.loads(args.validation.read_text())
     preflight = json.loads(args.loader_preflight.read_text())
     assert alignment["status"] == "alignment_complete"
-    assert alignment["schema_version"] == 2
+    assert alignment["schema_version"] == 3
     assert alignment["source_config_count"] == 52
     assert alignment["source_adapted_rows"] == 9_196_689
     assert alignment["nonempty_config_count"] == 51
@@ -70,7 +70,7 @@ def main() -> None:
 
     manifest["training_alignment"] = {
         "status": "validated",
-        "alignment_schema_version": 2,
+        "alignment_schema_version": 3,
         "builder_job_id": args.builder_job_id,
         "validation_job_id": args.validation_job_id,
         "loader_preflight_job_id": args.loader_preflight_job_id,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=adpv2full24k-alignedv2-q35-4b-babel-1ep
+#SBATCH --job-name=adpv2full24k-alignedv3-q35-4b-babel-1ep
 #SBATCH --partition=general
 #SBATCH --gres=gpu:L40S:4
 #SBATCH --nodes=1
@@ -21,15 +21,15 @@ RUNTIME_ROOT=/home/gneubig/work/adp/adp-experiments/openhands_sdk_training
 RUN_ROOT=/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717
 DATASET_ROOT=${RUN_ROOT}/dataset
 MANIFEST=${DATASET_ROOT}/manifest.json
-ALIGNMENT_MANIFEST=${DATASET_ROOT}/alignment_manifest_v2.json
+ALIGNMENT_MANIFEST=${DATASET_ROOT}/alignment_manifest_v3.json
 CONFIG_SOURCE=${SOURCE_ROOT}/openhands_sdk_training/gne1153_full_release_20260717/qwen35_4b_adpv2_full24k_aligned_babel_one_epoch.yaml
 RESTART_COUNT=${SLURM_RESTART_COUNT:-0}
 CONFIG=${RUN_ROOT}/evidence/qwen35_4b_adpv2_full24k_aligned_babel_one_epoch.runtime.${SLURM_JOB_ID}.restart_${RESTART_COUNT}.yaml
 PREPARE_CONFIG=${SOURCE_ROOT}/openhands_sdk_training/gne1153_full_release_20260717/prepare_aligned_restartable_config.py
 CHECKPOINT_EVIDENCE=${RUN_ROOT}/evidence/checkpoint_selection.${SLURM_JOB_ID}.restart_${RESTART_COUNT}.json
 PROBE=${SOURCE_ROOT}/openhands_sdk_training/scripts/gne1153_torch_distributed_probe.py
-TOKENIZED=${RUN_ROOT}/tokenized_aligned_v2_qwen35_4b_base_qwen3_5_nothink_seq32768
-TOKENIZED_MANIFEST=${DATASET_ROOT}/tokenized_aligned_v2_manifest.json
+TOKENIZED=${RUN_ROOT}/tokenized_aligned_v3_qwen35_4b_base_qwen3_5_nothink_seq32768
+TOKENIZED_MANIFEST=${DATASET_ROOT}/tokenized_aligned_v3_manifest.json
 WATCHER=${SOURCE_ROOT}/openhands_sdk_training/gne1153_full_release_20260717/watch_tokenized_manifest.py
 GPU_LOG=${RUN_ROOT}/evidence/gpu_${SLURM_JOB_ID}_restart_${RESTART_COUNT}.csv
 
@@ -51,7 +51,7 @@ assert projection["config_count"] == 52
 assert projection["train_rows"] == m["adapted_train_rows"]
 assert projection["evaluation"]["rows"] == 500
 assert a["status"] == "alignment_complete"
-assert a["schema_version"] == 2
+assert a["schema_version"] == 3
 assert a["source_adapted_rows"] == m["adapted_train_rows"]
 assert a["source_config_count"] == 52
 assert a["nonempty_config_count"] == 51
@@ -60,7 +60,7 @@ assert a["normalized_rows"] > 0
 assert a["merged_messages"] >= a["normalized_rows"]
 alignment_note = m["training_alignment"]
 assert alignment_note["status"] == "validated"
-assert alignment_note["alignment_schema_version"] == 2
+assert alignment_note["alignment_schema_version"] == 3
 assert alignment_note["training_rows"] == m["adapted_train_rows"]
 assert alignment_note["evaluation_rows"] == 500
 zero_trainable = [d for d in m["datasets"] if d["adapted_rows"] == 0]
@@ -107,8 +107,8 @@ cd "$RUNTIME_ROOT"
 export HF_HOME=/home/gneubig/exp/adp-smoke/hf_cache
 export WANDB_ENTITY=gneubig
 export WANDB_PROJECT=adp-experiments
-export WANDB_RUN_ID=adpv2-full24k-aligned-v2-qwen35-4b-babel-1ep-eb95b66-20260717
-export WANDB_NAME=adpv2-full-24k-aligned-v2-qwen35-4b-base-babel-one-epoch-eb95b66-20260717
+export WANDB_RUN_ID=adpv2-full24k-aligned-v3-qwen35-4b-babel-1ep-eb95b66-20260717
+export WANDB_NAME=adpv2-full-24k-aligned-v3-qwen35-4b-base-babel-one-epoch-eb95b66-20260717
 export WANDB_RESUME=allow
 export WANDB_DIR=${RUN_ROOT}/wandb
 export WANDB_CACHE_DIR=${RUN_ROOT}/wandb_cache
@@ -135,7 +135,7 @@ echo "config=${CONFIG}"
 echo "manifest=${MANIFEST}"
 echo "alignment_manifest=${ALIGNMENT_MANIFEST}"
 echo "tokenized_path=${TOKENIZED}"
-echo "output_dir=${RUN_ROOT}/output_aligned_v2_qwen35_4b_base_full_sft_one_epoch"
+echo "output_dir=${RUN_ROOT}/output_aligned_v3_qwen35_4b_base_full_sft_one_epoch"
 echo "wandb_entity=${WANDB_ENTITY}"
 echo "wandb_project=${WANDB_PROJECT}"
 echo "wandb_run_id=${WANDB_RUN_ID}"

@@ -27,7 +27,7 @@ def atomic_json(path: Path, value: object) -> None:
 
 
 def combine_response_group(group: list[dict[str, str]]) -> dict[str, str]:
-    if len(group) == 1:
+    if len(group) == 1 and group[0]["role"] == "assistant":
         return dict(group[0])
     saw_function = False
     thoughts: list[str] = []
@@ -49,7 +49,14 @@ def combine_response_group(group: list[dict[str, str]]) -> dict[str, str]:
         else:
             raise ValueError(f"unexpected response role: {role}")
     if functions:
-        function_json = json.dumps(functions, ensure_ascii=False)
+        # Keep literal delimiter text in arguments semantically exact while
+        # preventing the formatter's regex from closing our machine span early.
+        # JSON decoding restores these Unicode escapes before Qwen formatting.
+        function_json = (
+            json.dumps(functions, ensure_ascii=False)
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+        )
         thought = "\n\n".join(thoughts)
         # LLaMA-Factory selects the first <tool_call>...</tool_call> span and
         # treats everything outside it as the assistant thought. Put our
@@ -63,7 +70,7 @@ def combine_response_group(group: list[dict[str, str]]) -> dict[str, str]:
     return {"role": "assistant", "content": "\n\n".join(thoughts)}
 
 
-def normalize_messages(messages: list[dict[str, str]]) -> tuple[list[dict[str, str]], int]:
+def normalize_messages(messages: list[dict[str, str]]) -> tuple[list[dict[str, str]], int, int]:
     prefix: list[dict[str, str]] = []
     body = messages
     if messages and messages[0].get("role") == "system":
@@ -71,6 +78,7 @@ def normalize_messages(messages: list[dict[str, str]]) -> tuple[list[dict[str, s
         body = messages[1:]
     output = list(prefix)
     merged_messages = 0
+    wrapped_function_groups = 0
     index = 0
     while index < len(body):
         message = body[index]
@@ -87,6 +95,7 @@ def normalize_messages(messages: list[dict[str, str]]) -> tuple[list[dict[str, s
         group = body[index:end]
         output.append(combine_response_group(group))
         merged_messages += len(group) - 1
+        wrapped_function_groups += int(any(item["role"] == "function_call" for item in group))
         index = end
     normalized_body = output[len(prefix) :]
     for turn_index, message in enumerate(normalized_body):
@@ -97,7 +106,7 @@ def normalize_messages(messages: list[dict[str, str]]) -> tuple[list[dict[str, s
             )
     if len(normalized_body) % 2:
         raise ValueError("normalized record does not end in a response")
-    return output, merged_messages
+    return output, merged_messages, wrapped_function_groups
 
 
 def normalize_file(source: Path, destination: Path) -> dict:
@@ -107,17 +116,19 @@ def normalize_file(source: Path, destination: Path) -> dict:
     rows = 0
     changed_rows = 0
     merged_messages = 0
+    wrapped_function_groups = 0
     with source.open("rb") as input_handle, temporary.open("wb") as output_handle:
         for line_number, raw in enumerate(input_handle, 1):
             source_digest.update(raw)
             if not raw.strip():
                 continue
             record = json.loads(raw)
-            normalized, merged = normalize_messages(record["messages"])
-            if merged:
+            normalized, merged, wrapped = normalize_messages(record["messages"])
+            if merged or wrapped:
                 record["messages"] = normalized
                 changed_rows += 1
                 merged_messages += merged
+                wrapped_function_groups += wrapped
             encoded = (json.dumps(record, ensure_ascii=False) + "\n").encode()
             output_handle.write(encoded)
             destination_digest.update(encoded)
@@ -129,6 +140,7 @@ def normalize_file(source: Path, destination: Path) -> dict:
         "rows": rows,
         "changed_rows": changed_rows,
         "merged_messages": merged_messages,
+        "wrapped_function_groups": wrapped_function_groups,
         "source_sha256": source_digest.hexdigest(),
         "destination_sha256": destination_digest.hexdigest(),
         "destination_bytes": destination.stat().st_size,
@@ -144,9 +156,9 @@ def main() -> None:
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--targets", nargs="+", required=True)
     parser.add_argument("--workers", type=int, default=6)
-    parser.add_argument("--aligned-dir-name", default="training_projection_aligned_v2")
-    parser.add_argument("--view-dir-name", default="dataset_aligned_v2")
-    parser.add_argument("--manifest-name", default="alignment_manifest_v2.json")
+    parser.add_argument("--aligned-dir-name", default="training_projection_aligned_v3")
+    parser.add_argument("--view-dir-name", default="dataset_aligned_v3")
+    parser.add_argument("--manifest-name", default="alignment_manifest_v3.json")
     args = parser.parse_args()
     root = args.dataset_root.resolve()
     projection = root / "training_projection"
@@ -190,7 +202,7 @@ def main() -> None:
     view.mkdir(exist_ok=False)
     atomic_json(view / "dataset_info.json", dataset_info)
     result = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "alignment_complete",
         "created_at": now(),
         "source_manifest": str(manifest_path),
@@ -206,9 +218,10 @@ def main() -> None:
         "files": results,
         "normalized_rows": sum(item["changed_rows"] for item in results),
         "merged_messages": sum(item["merged_messages"] for item in results),
+        "wrapped_function_groups": sum(item["wrapped_function_groups"] for item in results),
         "response_merge_encoding": (
-            "machine-readable <tool_call> JSON span first; assistant thought outside the span; "
-            "LLaMA-Factory renders the thought before the formatted call"
+            "every function response group has a machine-readable <tool_call> JSON span first; "
+            "assistant thought is outside the span; LLaMA-Factory renders thought before call"
         ),
     }
     atomic_json(root / args.manifest_name, result)
