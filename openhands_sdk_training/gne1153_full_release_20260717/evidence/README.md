@@ -22,6 +22,9 @@ the non-overwriting run roots named by the launch scripts.
 - Persistent-monitor and skip-validator commit:
   `962d9330aa6998e428ebcde30df4863c6bc34b3a`.
 - Exact SHA-256 inventory: `ARTIFACTS.sha256` in this directory.
+- Alignment/current-launch identities are in `ALIGNMENT_ARTIFACTS.sha256`;
+  executed v1 identities are preserved separately in
+  `EXECUTED_ALIGNMENT_V1.sha256`.
 - Build job `9354064` executed `build_full_release.py` at SHA-256
   `2c6747b4cfd0454b382219caa8f126c12aee90be09eabc49f4bf477e0f7c5572`
   and `build_full_release.sbatch` at SHA-256
@@ -89,10 +92,11 @@ the non-overwriting run roots named by the launch scripts.
 
 - The source config uses `num_train_epochs: 1.0` and has no `max_steps`.
 - Runtime configs are created by
-  `openhands_sdk_training/scripts/gne1153_prepare_restartable_config.py`, which
-  accepts a checkpoint only when `trainer_state.json` and model artifacts are
-  present and `trainer_state.global_step` equals the checkpoint directory step.
-- `WANDB_RUN_ID=adpv2-full24k-qwen35-4b-babel-1ep-eb95b66-20260717` and
+  `../prepare_aligned_restartable_config.py`, which additionally requires the
+  four optimizer shards, four model-state shards, four RNG states, scheduler,
+  `latest=global_stepN`, matching trainer state, nonzero files, and a 120-second
+  settle age before resuming.
+- `WANDB_RUN_ID=adpv2-full24k-aligned-v3-qwen35-4b-babel-1ep-eb95b66-20260717` and
   `WANDB_RESUME=allow` are stable across Slurm restarts.
 - These configuration properties are not restart evidence by themselves. A
   controlled USR1/requeue after a complete checkpoint, followed by proof of a
@@ -100,6 +104,32 @@ the non-overwriting run roots named by the launch scripts.
   Babel acceptance.
 - As of the artifact commit above, Babel Stage 1 has **not** passed: there is no
   accepted real optimizer loss step or W&B metric sync yet.
+
+## Response alignment and function formatting
+
+- LLaMA-Factory requires alternating prompt/response sides. The canonical
+  adapter preserves 9,196,689 trainable rows but six configs contain adjacent
+  response-side messages, so the unaligned attempt `9356517` was canceled and
+  is not accepted.
+- Alignment v1 builder `9356616` completed, but full validator `9356688`
+  correctly failed: 13 SALT function messages had literal tool-call text in an
+  assistant thought before v1's machine wrapper. Loader preflight `9356765`
+  was canceled with its dependency unsatisfied.
+- Full collision census `9356927` completed `0:0` over 82,329,741 function
+  messages and found exactly those 13 invalid messages, all in config 02; all
+  other configs and eval had zero. Sanitized counts are in
+  `FUNCTION_COLLISION_CENSUS_9356927.json`; its raw log is intentionally not
+  committed because diagnostic samples contain content prefixes.
+- V2 builder `9356938` was canceled before its script was edited; its partial
+  directory remains preserved. V3 wraps every function group with the
+  machine-readable span first and emits angle brackets inside machine JSON as
+  Unicode escapes, which JSON decoding restores exactly before Qwen formatting.
+  Synthetic single-call and merged-thought shadow cases pass the installed
+  Qwen3.5 formatter.
+- Durable v3 chain: builder `9357000`, full validator `9357001`, actual loader
+  preflight `9357006`, and fail-closed continuation job `9357032`. The
+  continuation cannot submit training unless all three upstream jobs pass and
+  the committed recorder/trainer/monitor hashes still match.
 
 ## Persisted continuation deadline
 
