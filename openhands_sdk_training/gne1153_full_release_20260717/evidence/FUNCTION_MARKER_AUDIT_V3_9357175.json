@@ -1,0 +1,23 @@
+{
+  "affected": [
+    {"dataset_name": "adpv2_full24k_14", "issue_counts": {"bare_json_with_literal_markers": 84}, "issue_messages": 84},
+    {"dataset_name": "adpv2_full24k_20", "issue_counts": {"bare_json_with_literal_markers": 55}, "issue_messages": 55},
+    {"dataset_name": "adpv2_full24k_25", "issue_counts": {"wrapped_ambiguous_markers": 22}, "issue_messages": 22, "resolution": "safe machine wrapper begins at byte zero; extra markers occur only in trailing assistant thought"},
+    {"dataset_name": "adpv2_full24k_32", "issue_counts": {"bare_json_with_literal_markers": 16}, "issue_messages": 16},
+    {"dataset_name": "adpv2_full24k_36", "issue_counts": {"bare_json_with_literal_markers": 876}, "issue_messages": 876},
+    {"dataset_name": "adpv2_full24k_49", "issue_counts": {"bare_json_with_literal_markers": 4}, "issue_messages": 4}
+  ],
+  "entries_including_eval": 53,
+  "evaluation_rows": 500,
+  "function_messages": 82329741,
+  "issue_messages": 1057,
+  "job_id": 9357175,
+  "raw_evidence_path": "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/evidence/alignment_v3_function_marker_audit-9357175.json",
+  "raw_evidence_sha256": "adcd61539ff0dac666bf0e86899e974c47376cd472393395e734f24cc8afec79",
+  "sample_count": 0,
+  "scanner_sha256": "b0b5e2b5b878877aabd370b6520f7e91b3eeb5f9d9cf277a419ffdefe88d8a08",
+  "sbatch_sha256": "5827621e19074ed00a585454bd69fb5e9b674e6ab6c8c5269cb9fa87463fc6a2",
+  "source_commit": "cf3a807bb93b7886f24f54049dd42cb9ed417811",
+  "state": "COMPLETED",
+  "training_rows": 9196689
+}
