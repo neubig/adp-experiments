@@ -1,0 +1,10 @@
+requested_at=2026-07-18T10:49:08-04:00
+reason=batch_shell_USR1_deferred_while_waiting_on_foreground_llamafactory
+cli_pid=790909
+    PID    PPID    PGID     SID STAT                  STARTED CMD
+ 790909  790462  790462  790443 Sl   Sat Jul 18 09:58:03 2026 /data/user_data/gneubig/tir4/exp/adp-smoke/.venv/bin/python /home/gneubig/exp/adp-smoke/.venv/bin/llamafactory-cli train /home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/evidence/qwen35_4b_adpv2_full24k_aligned_babel_one_epoch.runtime.9358921.restart_0.yaml
+torchrun_pid=791036
+    PID    PPID    PGID     SID STAT                  STARTED CMD
+ 791036  790909  790462  790443 Sl   Sat Jul 18 09:58:11 2026 /data/user_data/gneubig/tir4/exp/adp-smoke/.venv/bin/python /home/gneubig/exp/adp-smoke/.venv/bin/torchrun --nnodes 1 --node_rank 0 --nproc_per_node 4 --master_addr 127.0.0.1 --master_port 53921 /data/user_data/gneubig/tir4/exp/adp-smoke/.venv/lib/python3.12/site-packages/llamafactory/launcher.py /home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/evidence/qwen35_4b_adpv2_full24k_aligned_babel_one_epoch.runtime.9358921.restart_0.yaml
+kill_command=kill -TERM 791036
+completed_at=2026-07-18T10:49:08-04:00
