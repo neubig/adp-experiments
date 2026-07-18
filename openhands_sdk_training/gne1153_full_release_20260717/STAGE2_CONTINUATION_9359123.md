@@ -7,5 +7,6 @@
 - YAML SHA256: `7e3ead7214ad64cb070fe1fc4cbe14e468b9f290b2e24043d3a13f465f207e59`.
 - DeepSpeed ZeRO-3 hpZ8 config SHA256: `119ea229c7f6df7b1b26acfecc09fc100e165655335c12bf45783381a8c70b21`.
 - Durable actual-ID monitor chain: `9359124` (`after:9359123`), then `9359125` (`afterany:9359124`), `9359126` (`afterany:9359125`), and `9359127` (`afterany:9359126`). Each monitor has an 11h55m limit, shares the atomic `monitor_orchard_9359123.snapshot.json` and history, and exits immediately if acceptance is already proven.
+- Obsolete monitor `9359051`, which targeted canceled job 9359050, was found still running and canceled at 2026-07-18 11:08 EDT; `sacct` verified `CANCELLED by 17414`. It is not part of the correct monitor chain.
+- Read-only debug-node preflight jobs `9359153`/`9359154` confirmed the aligned-v4 source manifest, alignment manifest, and dataset view are readable from `/home/gneubig/exp`. Debug node `babel-p9-16` does not mount `/project/flame`, so it cannot validate the Flame-local model or capacity; this is a partition mount distinction, not evidence that the paths are absent on Flame nodes. Job 9359123 retains fail-closed tests for the model, tokenizer, manifest, and tokenizer compatibility on its allocated Flame nodes before mutation or training.
 - Acceptance remains pending until job 9359123 is RUNNING, its distinct 35B tokenizer manifest proves 9,196,689/500 rows with zero skips, all 16 H100s are active, a real optimizer loss is logged, and server-side W&B metrics are verified for its distinct run ID.
-
