@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 
-LOSS_RE = re.compile(r"(?:['\"]loss['\"]\s*:|\bloss\s*=)\s*([0-9.eE+-]+)")
+LOSS_RE = re.compile(r"(?:['\"]loss['\"]\s*:|\bloss\s*=)\s*['\"]?([0-9.eE+-]+)")
 WANDB_URL_RE = re.compile(r"https://wandb\.ai/[^\s]+")
 JOB_NAME = "adpv2full24k-alignedv4-q35-35b-orchard-1ep"
 WANDB_ENTITY = "gneubig"

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-LOSS_RE = re.compile(r"(?:['\"]loss['\"]\s*:|\bloss\s*=)\s*([0-9.eE+-]+)")
+LOSS_RE = re.compile(r"(?:['\"]loss['\"]\s*:|\bloss\s*=)\s*['\"]?([0-9.eE+-]+)")
 STEP_RE = re.compile(r"(?:['\"](?:step|global_step)['\"]\s*:|\bstep\s*=)\s*([0-9]+)")
 WANDB_URL_RE = re.compile(r"https://wandb\.ai/[^\s]+")
 

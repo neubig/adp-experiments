@@ -17,7 +17,7 @@ from typing import Any
 from prepare_aligned_restartable_config import checkpoint_evidence, checkpoint_step
 
 
-LOSS_RE = re.compile(r"(?:['\"]loss['\"]\s*:|\bloss\s*=)\s*([0-9.eE+-]+)")
+LOSS_RE = re.compile(r"(?:['\"]loss['\"]\s*:|\bloss\s*=)\s*['\"]?([0-9.eE+-]+)")
 PROGRESS_RE = re.compile(r"(?<!\d)(\d{1,9})/(\d{1,9})(?!\d)")
 WANDB_URL_RE = re.compile(r"https://wandb\.ai/[^\s]+")
 EXPECTED_WANDB_ID = "adpv2-full24k-aligned-v4-qwen35-4b-babel-1ep-eb95b66-20260717"
