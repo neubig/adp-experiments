@@ -19,6 +19,8 @@ the non-overwriting run roots named by the launch scripts.
 
 - Artifact commit: `7dfac38b447c71eece2dc5ef3b671c017b3b6c59` on
   `gne1153-qwen35-4b-babel-fix`.
+- Persistent-monitor and skip-validator commit:
+  `962d9330aa6998e428ebcde30df4863c6bc34b3a`.
 - Exact SHA-256 inventory: `ARTIFACTS.sha256` in this directory.
 - Build job `9354064` executed `build_full_release.py` at SHA-256
   `2c6747b4cfd0454b382219caa8f126c12aee90be09eabc49f4bf477e0f7c5572`
@@ -104,3 +106,38 @@ the non-overwriting run roots named by the launch scripts.
 - Orchard work starts only after Babel Stage 1 passes. Prior H100 resources must
   be resolved through the proven `flame-earlybirds` Slurm jobs/configs rather
   than assuming an `ssh orchard` alias exists.
+
+## Cognitivekernel skip validation
+
+- Validation job `9356577` completed `0:0` on 2026-07-18 and recomputed the
+  canonical adapter outcome for all 47,271 `cognitivekernel_pro_sft` source
+  rows using the manifest-pinned source and adapter hashes.
+- Source role distribution is exact: 47,184 rows are `system,user` and end on
+  `user`; 87 rows are `system,user,assistant` and end on `assistant`.
+- The independent response test classified the same 47,184 rows as lacking any
+  assistant/function-call response indicator and the same 87 rows as containing
+  one. There were zero response-bearing skipped rows and zero response-free
+  retained rows.
+- Five deterministic samples per outcome use the smallest
+  `sha256(config + NUL + record id + NUL + source line)` keys. Evidence records
+  IDs, record hashes, roles, schemas, and content lengths, but no conversation
+  text.
+- Conclusion: the high skip rate is correct canonical-adapter behavior, not a
+  conversion bug. The skipped records contain prompts but no response target.
+- Durable evidence:
+  `/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/evidence/cognitivekernel_skip_validation.json`,
+  SHA-256 `74d86c23ded124ed603ccc7c15a82e9fa5037a8ba6c2fc4a00b3368d875f426c`.
+- The prior manifest was preserved at the path recorded in the validation note.
+  The updated manifest SHA-256 is
+  `a2cb08664d2b7ec1a22bc24147d9afc8b954858d89d8da060a103858d114953c`.
+
+## Persistent Babel monitor
+
+- Training job under observation: `9356517`.
+- Independent monitor job: `9356578`, with a requested wall time of 11:55:00.
+- Latest atomic snapshot:
+  `/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/evidence/monitor_9356517.snapshot.json`;
+  append-only history uses the same basename with `.history.jsonl`.
+- The monitor records evidence only and does not mutate or accept the training
+  job. At its first snapshot, `9356517` was pending and all runtime acceptance
+  flags other than the full-52 release manifest were false.
