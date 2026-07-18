@@ -19,8 +19,8 @@ from pathlib import Path
 TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 
 
-def scan(item: tuple[str, str]) -> dict:
-    dataset_name, path_text = item
+def scan(item: tuple[str, str, bool]) -> dict:
+    dataset_name, path_text, omit_samples = item
     path = Path(path_text)
     rows = 0
     function_messages = 0
@@ -37,7 +37,7 @@ def scan(item: tuple[str, str]) -> dict:
         error: str | None = None,
     ) -> None:
         issue_counts[kind] = issue_counts.get(kind, 0) + 1
-        if len(samples) < 50:
+        if not omit_samples and len(samples) < 50:
             sample = {
                 "kind": kind,
                 "line": line_number,
@@ -123,9 +123,17 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-info", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument(
+        "--omit-samples",
+        action="store_true",
+        help="record counts and locations without source-content prefixes",
+    )
     args = parser.parse_args()
     info = json.loads(args.dataset_info.read_text())
-    items = [(name, entry["file_name"]) for name, entry in info.items()]
+    items = [
+        (name, entry["file_name"], args.omit_samples)
+        for name, entry in info.items()
+    ]
     items.sort(key=lambda item: Path(item[1]).stat().st_size, reverse=True)
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as pool:
         results = list(pool.map(scan, items))
