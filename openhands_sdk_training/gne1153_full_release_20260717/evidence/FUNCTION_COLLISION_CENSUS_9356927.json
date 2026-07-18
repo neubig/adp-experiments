@@ -1,0 +1,30 @@
+{
+  "job_id": 9356927,
+  "state": "COMPLETED",
+  "exit_code": "0:0",
+  "elapsed": "00:11:30",
+  "dataset_view": "dataset_aligned (v1)",
+  "config_entries_including_eval": 53,
+  "rows_including_eval": 9197189,
+  "training_rows": 9196689,
+  "evaluation_rows": 500,
+  "function_messages": 82329741,
+  "invalid_function_messages": 13,
+  "affected": [
+    {
+      "dataset_name": "adpv2_full24k_02",
+      "file": "02_SALT-NLP_SWE-chat.llamafactory.jsonl",
+      "rows": 39498,
+      "function_messages": 440826,
+      "invalid_function_messages": 13,
+      "error_type": "JSONDecodeError"
+    }
+  ],
+  "all_other_configs_and_eval_invalid_function_messages": 0,
+  "raw_log_path": "adpv2_function_scan_9356927.log",
+  "raw_log_sha256": "0275335ecbff633b0d214efc030b9f65e5d918702ba1ea35294d5adbef6bd5f0",
+  "raw_log_not_committed_reason": "diagnostic samples include source content prefixes; sanitized counts only are committed",
+  "scanner_path": "openhands_sdk_training/gne1153_full_release_20260717/scan_adpv2_function_content.py",
+  "scanner_sha256": "8ed40c631fa4998c9a23f5d9a97fa37348ffa5a065fa5c50b5a22309ea9858c2",
+  "conclusion": "Only SALT v1 has formatter-shadowed function content (13 messages); the six established alignment targets cover it. V3 wraps every function group first and Unicode-escapes angle brackets inside machine JSON so decoded arguments remain exact."
+}
