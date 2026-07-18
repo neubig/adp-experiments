@@ -39,7 +39,7 @@ PATCH_HELPER=${CODE_DIR}/scripts/patch_llamafactory_liger_eval_skip_logits.py
 RESTART_COUNT=${SLURM_RESTART_COUNT:-0}
 CONFIG=${RUN_ROOT}/evidence/qwen35_35b_a3b_adpv2_full24k_aligned_orchard_one_epoch.runtime.${SLURM_JOB_ID}.restart_${RESTART_COUNT}.yaml
 CHECKPOINT_EVIDENCE=${RUN_ROOT}/evidence/checkpoint_selection.${SLURM_JOB_ID}.restart_${RESTART_COUNT}.json
-GPU_LOG=${RUN_ROOT}/evidence/gpu_${SLURM_JOB_ID}_restart_${RESTART_COUNT}.log
+GPU_LOG=${DATA_RUN_ROOT}/evidence/gpu_orchard_${SLURM_JOB_ID}_restart_${RESTART_COUNT}.log
 TOKENIZER_AUDIT_EVIDENCE=${RUN_ROOT}/evidence/qwen35_4b_vs_35b_tokenizer.${SLURM_JOB_ID}.restart_${RESTART_COUNT}.json
 TRAIN_LOG=${SOURCE_ROOT}/openhands_sdk_training/gne1153_full_release_20260717/${SLURM_JOB_NAME}-${SLURM_JOB_ID}.err
 
