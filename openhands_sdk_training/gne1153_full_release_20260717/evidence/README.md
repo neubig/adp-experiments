@@ -131,9 +131,12 @@ the non-overwriting run roots named by the launch scripts.
 - Durable evidence:
   `/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/evidence/cognitivekernel_skip_validation.json`,
   SHA-256 `74d86c23ded124ed603ccc7c15a82e9fa5037a8ba6c2fc4a00b3368d875f426c`.
-- The prior manifest was preserved at the path recorded in the validation note.
-  The updated manifest SHA-256 is
-  `a2cb08664d2b7ec1a22bc24147d9afc8b954858d89d8da060a103858d114953c`.
+- The pre-validation and pre-schema-note manifests were preserved at the paths
+  recorded in the validation note. After adding the explicit schema evidence,
+  the manifest SHA-256 is
+  `2c9b15665569e3beb5e296c186d50c11960bcfc6a37e2d166ea9ceec57c11304`
+  (prior SHA-256
+  `a2cb08664d2b7ec1a22bc24147d9afc8b954858d89d8da060a103858d114953c`).
 
 ## Persistent Babel monitor
 
