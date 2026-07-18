@@ -116,10 +116,14 @@ def main() -> None:
     assert len(items) == 52
     eval_entry = dataset_info["adpv2_full24k_eval_500"]
     items.append(("adpv2_full24k_eval_500", eval_entry["file_name"], 500))
+    # Schedule the largest files first so one late 98 GB file cannot leave
+    # seven workers idle at the end of a full validation pass.
+    items.sort(key=lambda item: Path(item[1]).stat().st_size, reverse=True)
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as pool:
         results = list(pool.map(validate_file, items))
     training_results = [item for item in results if item["dataset_name"] != "adpv2_full24k_eval_500"]
+    evaluation_result = next(item for item in results if item["dataset_name"] == "adpv2_full24k_eval_500")
     assert sum(item["rows"] for item in training_results) == 9_196_689
 
     alignment_files = {item["destination"]: item for item in alignment["files"]}
@@ -137,7 +141,7 @@ def main() -> None:
         "config_count": 52,
         "nonempty_config_count": 51,
         "training_rows": sum(item["rows"] for item in training_results),
-        "evaluation_rows": results[-1]["rows"],
+        "evaluation_rows": evaluation_result["rows"],
         "function_messages": sum(item["function_messages"] for item in results),
         "wrapped_function_messages": sum(item["wrapped_function_messages"] for item in results),
         "files": results,
