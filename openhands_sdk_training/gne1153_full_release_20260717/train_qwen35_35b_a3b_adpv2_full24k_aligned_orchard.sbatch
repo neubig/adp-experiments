@@ -57,7 +57,15 @@ assert a["source_config_count"] == 52
 assert a["nonempty_config_count"] == 51
 assert a["empty_dataset_names"] == ["adpv2_full24k_37"]
 assert t["splits"] == {"train": 9_196_689, "validation": 500}
+assert t["adapter_train_rows"] == 9_196_689
+assert t["tokenizer_output_train_rows"] == 9_196_689
 assert t["tokenizer_skipped_train_rows"] == 0
+assert t["evaluation_input_rows"] == 500
+assert t["evaluation_output_rows"] == 500
+assert t["evaluation_skipped_rows"] == 0
+assert t["total_tokenizer_filtered_rows"] == 0
+assert t["llamafactory_abnormal_warning_count"] == 0
+assert t["warning_count_matches_total_filtered"] is True
 assert t["tokenized_path"] == str(Path(
     "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/tokenized_aligned_v4_qwen35_4b_base_qwen3_5_nothink_seq32768"
 ).resolve())
