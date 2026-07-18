@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=adpv2full24k-q35-35b-orchard-1ep
+#SBATCH --job-name=adpv2full24k-alignedv3-q35-35b-orchard-1ep
 #SBATCH --partition=flame-earlybirds
 #SBATCH --qos=earlybird_qos
 #SBATCH --account=gneubig
@@ -24,9 +24,9 @@ VENV_DIR=/home/gneubig/exp/adp-smoke/.venv
 DATA_RUN_ROOT=/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717
 DATASET_ROOT=${DATA_RUN_ROOT}/dataset
 MANIFEST=${DATASET_ROOT}/manifest.json
-ALIGNMENT_MANIFEST=${DATASET_ROOT}/alignment_manifest.json
-TOKENIZED_MANIFEST=${DATASET_ROOT}/tokenized_aligned_manifest.json
-TOKENIZED=${DATA_RUN_ROOT}/tokenized_aligned_qwen35_4b_base_qwen3_5_nothink_seq32768
+ALIGNMENT_MANIFEST=${DATASET_ROOT}/alignment_manifest_v3.json
+TOKENIZED_MANIFEST=${DATASET_ROOT}/tokenized_aligned_v3_manifest.json
+TOKENIZED=${DATA_RUN_ROOT}/tokenized_aligned_v3_qwen35_4b_base_qwen3_5_nothink_seq32768
 RUN_ROOT=/project/flame/gneubig/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717
 MODEL_DIR=/project/flame/gneubig/adp/models/Qwen3.5-35B-A3B
 CONFIG_SOURCE=${SOURCE_ROOT}/openhands_sdk_training/gne1153_full_release_20260717/qwen35_35b_a3b_adpv2_full24k_aligned_orchard_one_epoch.yaml
@@ -40,6 +40,7 @@ GPU_LOG=${RUN_ROOT}/evidence/gpu_${SLURM_JOB_ID}_restart_${RESTART_COUNT}.log
 
 python3 - "$MANIFEST" "$ALIGNMENT_MANIFEST" "$TOKENIZED_MANIFEST" "$CONFIG_SOURCE" "$DEEPSPEED_CONFIG" <<'PY'
 import json, sys
+from pathlib import Path
 m = json.load(open(sys.argv[1]))
 a = json.load(open(sys.argv[2]))
 t = json.load(open(sys.argv[3]))
@@ -50,12 +51,16 @@ assert m["source_rows"] == 9_640_563
 assert m["adapted_train_rows"] == 9_196_689
 assert m["observed_config_count"] == 52
 assert a["status"] == "alignment_complete"
+assert a["schema_version"] == 3
 assert a["source_adapted_rows"] == m["adapted_train_rows"]
 assert a["source_config_count"] == 52
 assert a["nonempty_config_count"] == 51
 assert a["empty_dataset_names"] == ["adpv2_full24k_37"]
 assert t["splits"] == {"train": 9_196_689, "validation": 500}
 assert t["tokenizer_skipped_train_rows"] == 0
+assert t["tokenized_path"] == str(Path(
+    "/home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/tokenized_aligned_v3_qwen35_4b_base_qwen3_5_nothink_seq32768"
+).resolve())
 assert "num_train_epochs: 1.0" in cfg
 assert "max_steps:" not in cfg
 dataset_line = next(line for line in cfg.splitlines() if line.startswith("dataset: "))
@@ -97,8 +102,8 @@ export HUGGINGFACE_HUB_CACHE=${HF_HOME}/hub
 export TOKENIZERS_PARALLELISM=false
 export WANDB_ENTITY=gneubig
 export WANDB_PROJECT=adp-experiments
-export WANDB_RUN_ID=adpv2-full24k-aligned-qwen35-35b-orchard-1ep-eb95b66-20260717
-export WANDB_NAME=adpv2-full-24k-aligned-qwen35-35b-a3b-orchard-one-epoch-eb95b66-20260717
+export WANDB_RUN_ID=adpv2-full24k-aligned-v3-qwen35-35b-orchard-1ep-eb95b66-20260717
+export WANDB_NAME=adpv2-full-24k-aligned-v3-qwen35-35b-a3b-orchard-one-epoch-eb95b66-20260717
 export WANDB_RESUME=allow
 export WANDB_DIR=${RUN_ROOT}/wandb
 export WANDB_CACHE_DIR=${RUN_ROOT}/wandb_cache
@@ -131,7 +136,7 @@ echo "started_at=$(date -Is)"
 echo "config=${CONFIG}"
 echo "model_dir=${MODEL_DIR}"
 echo "tokenized_path=${TOKENIZED}"
-echo "output_dir=${RUN_ROOT}/output_qwen35_35b_a3b_hpz8_fa3_one_epoch"
+echo "output_dir=${RUN_ROOT}/output_aligned_v3_qwen35_35b_a3b_hpz8_fa3_one_epoch"
 echo "master=${MASTER_ADDR}:${MASTER_PORT}"
 echo "wandb_entity=${WANDB_ENTITY}"
 echo "wandb_project=${WANDB_PROJECT}"
