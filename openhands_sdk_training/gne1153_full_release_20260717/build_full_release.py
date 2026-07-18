@@ -128,6 +128,12 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--adapter", type=Path, required=True)
     parser.add_argument("--eval-size", type=int, default=500)
+    parser.add_argument(
+        "--projection-workers",
+        type=int,
+        default=8,
+        help="parallel workers for the byte-preserving metadata-free training projection",
+    )
     args = parser.parse_args()
 
     if len(EXPECTED_ROWS) != 52 or sum(EXPECTED_ROWS.values()) != EXPECTED_TOTAL_ROWS:
@@ -324,6 +330,14 @@ def main() -> None:
     )
     atomic_json(args.output_root / "manifest.json", manifest)
     print(json.dumps({"manifest": str(args.output_root / "manifest.json"), **manifest}, indent=2))
+
+    # Preserve the canonical adapted files above, then create the distinct
+    # id/messages/tools-only view consumed by LLaMA-Factory. Import locally so
+    # this release builder and the standalone repair command share one exact
+    # invariant checker and temp+rename implementation.
+    from project_training_schema import build_projection
+
+    build_projection(args.output_root, args.projection_workers)
 
 
 if __name__ == "__main__":

@@ -141,12 +141,9 @@ def project_file(source_text: str, destination_text: str, expected_sha256: str) 
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset-root", type=Path, required=True)
-    parser.add_argument("--workers", type=int, default=8)
-    args = parser.parse_args()
-    root = args.dataset_root.resolve()
+def build_projection(dataset_root: Path, workers: int = 8) -> dict[str, Any]:
+    """Build and record the immutable adapter-to-training projection."""
+    root = dataset_root.resolve()
     manifest_path = root / "manifest.json"
     dataset_info_path = root / "dataset_info.json"
     manifest_bytes = manifest_path.read_bytes()
@@ -168,7 +165,7 @@ def main() -> None:
         "input_dataset_info_sha256": sha256_file(dataset_info_path),
         "script_path": str(Path(__file__).resolve()),
         "script_sha256": sha256_file(Path(__file__).resolve()),
-        "workers": args.workers,
+        "workers": workers,
         "rule": (
             "retain every canonical-adapter row and preserve id/messages/tools bytes exactly; "
             "strip only a final top-level metadata field"
@@ -182,7 +179,7 @@ def main() -> None:
     atomic_json(progress_path, projection_manifest)
 
     futures = {}
-    with ProcessPoolExecutor(max_workers=args.workers) as executor:
+    with ProcessPoolExecutor(max_workers=workers) as executor:
         for dataset in manifest["datasets"]:
             source = Path(dataset["adapted_path"])
             destination = projection_root / source.name
@@ -272,6 +269,15 @@ def main() -> None:
     manifest["dataset_info_sha256"] = sha256_file(dataset_info_path)
     atomic_json(manifest_path, manifest)
     print(json.dumps({"manifest": str(manifest_path), "train_rows": total_rows}, indent=2))
+    return manifest
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset-root", type=Path, required=True)
+    parser.add_argument("--workers", type=int, default=8)
+    args = parser.parse_args()
+    build_projection(args.dataset_root, args.workers)
 
 
 if __name__ == "__main__":

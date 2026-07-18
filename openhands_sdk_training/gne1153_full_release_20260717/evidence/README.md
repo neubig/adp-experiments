@@ -50,6 +50,12 @@ the non-overwriting run roots named by the launch scripts.
 - The canonical-adapter outputs were preserved. Projection job `9356262`
   removed only the final top-level `metadata` field while byte-preserving all
   training fields; it completed 52/52 files and 9,196,689 adapted rows.
+- Future full-release builds invoke that same streaming projection after
+  canonical adaptation, with `--projection-workers` (default 8). They preserve
+  `adapted/` and its hashes, then atomically create the distinct metadata-free
+  training view and update `dataset_info.json` and the manifest. Executed
+  builder identities remain in `ARTIFACTS.sha256`; patched future identities
+  are separate in `FUTURE_BUILDER_ARTIFACTS.sha256`.
 - Independent projection validation job `9356352` completed `0:0`. Its closed
   manifest SHA-256 is
   `c26b00d521262170ebfeb3f9250475a8072e74c28ba2474b379f562a5ec37a32`,
