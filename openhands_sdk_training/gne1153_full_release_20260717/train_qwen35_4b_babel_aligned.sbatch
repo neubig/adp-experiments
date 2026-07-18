@@ -57,6 +57,13 @@ assert a["nonempty_config_count"] == 51
 assert a["empty_dataset_names"] == ["adpv2_full24k_37"]
 assert a["normalized_rows"] > 0
 assert a["merged_messages"] >= a["normalized_rows"]
+alignment_note = m["training_alignment"]
+assert alignment_note["status"] == "validated"
+assert alignment_note["builder_job_id"] == 9356616
+assert alignment_note["validation_job_id"] == 9356688
+assert alignment_note["loader_preflight_job_id"] == 9356765
+assert alignment_note["training_rows"] == m["adapted_train_rows"]
+assert alignment_note["evaluation_rows"] == 500
 zero_trainable = [d for d in m["datasets"] if d["adapted_rows"] == 0]
 assert [(d["index"], d["config_name"], d["source_rows_observed"], d["skipped_rows"]) for d in zero_trainable] == [
     (37, "omniact", 6789, 6789)
