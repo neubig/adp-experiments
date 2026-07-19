@@ -25,7 +25,7 @@ tokenized_path: /home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k
 ### output
 output_dir: /home/gneubig/exp/adp/runs/openhands_sdk_training/adpv2_full_24k_eb95b66_20260717/output_aligned_v4_qwen35_4b_base_full_sft_one_epoch
 logging_steps: 1
-save_steps: 10
+save_steps: 500
 save_total_limit: 3
 plot_loss: true
 overwrite_output_dir: false
